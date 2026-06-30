@@ -1,0 +1,17 @@
+{
+  "name": "earshot",
+  "version": "1.0.0",
+  "description": "Stay within earshot of every chat — a macOS menubar hub for Google Chat, Gmail, Slack, WhatsApp, Discord and any web chat, with per-service priority and unread counts.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "./build.sh",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@biomejs/biome": "2.5.1",
+    "electron": "^33.0.0"
+  }
+}
