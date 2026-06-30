@@ -1,5 +1,7 @@
 # Earshot
 
+[![CI](https://github.com/dmetzner/earshot/actions/workflows/ci.yml/badge.svg)](https://github.com/dmetzner/earshot/actions/workflows/ci.yml)
+
 A macOS **menubar hub** for all your web chats — Google Chat, Gmail, Slack, WhatsApp, Discord, or any other web-based messenger. One window, one menubar icon, and an at-a-glance unread indicator that tells you **where** you have messages and **how urgent** they are.
 
 > Built because WebKit-based wrappers (Unite, Coherence, etc.) can't log into Google — Google blocks embedded webviews. Earshot runs on Electron's bundled Chromium, so logins work exactly like Chrome.

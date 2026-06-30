@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install deps
+        run: npm ci
+        env:
+          # No need to download the ~100 MB Electron binary just to lint.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      - name: Biome (lint + format check)
+        run: npx biome ci .

@@ -155,10 +155,8 @@ function orderedServices() {
   return order.map((id) => SERVICES.find((s) => s.id === id));
 }
 
-const prio = {}; // id -> 'high' | 'low' (defaults from SERVICES, overridable + persisted)
-SERVICES.forEach((s) => {
-  prio[s.id] = s.prio;
-});
+// id -> 'high' | 'low'. Populated by initFromServices() (defaults), then loadPrio() (overrides).
+const prio = {};
 
 function prioPath() {
   return path.join(app.getPath('userData'), 'prio.json');
