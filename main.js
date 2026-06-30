@@ -223,9 +223,11 @@ function updateTray() {
   if (unreadServices.length === 0) {
     title = '💬'; // calm idle — always visible
   } else {
+    // Per-app icon + count says where & how many; high-priority apps come first,
+    // low-priority sit after a "·" separator. No always-on red (it never turns off).
     const parts = [];
-    if (high.length) parts.push(`🔴 ${fmt(high)}`); // act now
-    if (low.length) parts.push(`${high.length ? '· ' : ''}${fmt(low)}`); // know, don't jump
+    if (high.length) parts.push(fmt(high));
+    if (low.length) parts.push(`${high.length ? '· ' : ''}${fmt(low)}`);
     title = parts.join('  ');
   }
   tray.setTitle(title);
