@@ -1,4 +1,8 @@
 <meta charset="utf-8" />
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self';"
+/>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -76,7 +80,7 @@ Saving restarts the app to apply (your logins are kept).</p>
     tr.dataset.unreadJs = s.unreadJs || '';
     tr.innerHTML = `
       <td class="drag">⠿</td>
-      <td class="emoji"><input class="f-emoji" maxlength="4" value="${s.emoji || ''}" /></td>
+      <td class="emoji"><input class="f-emoji" maxlength="4" value="${(s.emoji || '').replace(/"/g, '&quot;')}" /></td>
       <td><input class="f-name" value="${(s.name || '').replace(/"/g, '&quot;')}" placeholder="Slack" /></td>
       <td><input class="f-url" value="${(s.url || '').replace(/"/g, '&quot;')}" placeholder="https://app.slack.com/client" /></td>
       <td><select class="f-prio">

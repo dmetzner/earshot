@@ -30,6 +30,25 @@ const GCHAT_UNREAD_JS = `(() => {
   return total;
 })()`;
 
+// Injected into each service page's MAIN world (see createServiceView). Overrides
+// the Badging API so the latest count is stashed on window.__earshotBadge, which
+// main polls. Guarded so re-injection on each load is a no-op.
+const BADGE_HOOK_JS = `(() => {
+  if (window.__earshotBadgeHooked) return;
+  window.__earshotBadgeHooked = true;
+  window.__earshotBadge = 0;
+  try {
+    Object.defineProperty(Navigator.prototype, 'setAppBadge', {
+      configurable: true,
+      value: (n) => { window.__earshotBadge = Number(n) || 0; return Promise.resolve(); },
+    });
+    Object.defineProperty(Navigator.prototype, 'clearAppBadge', {
+      configurable: true,
+      value: () => { window.__earshotBadge = 0; return Promise.resolve(); },
+    });
+  } catch (_e) {}
+})()`;
+
 // Seed config — written to services.json on first run, then managed via the Settings
 // window. prio 'high' → red menubar alert; 'low' → shown quietly. Each gets its own session.
 const DEFAULT_SERVICES = [
@@ -190,9 +209,41 @@ function parseUnread(title) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Registrable-domain approximation. No PSL available (no new deps), so this is a
+// best-effort last-two-labels heuristic used only to derive the same-service base.
 function baseDomain(host) {
   const p = host.split('.');
   return p.slice(-2).join('.');
+}
+
+// Domain-boundary match: host must BE serviceBase or a real subdomain of it.
+// serviceBase `slack.com` accepts `slack.com` / `app.slack.com` but rejects
+// `myslack.com` / `evilslack.com` — a plain `endsWith` suffix check accepts those.
+function sameService(host, serviceBase) {
+  return host === serviceBase || host.endsWith(`.${serviceBase}`);
+}
+
+// Gate a target URL for a service view: allow login hosts + same-service
+// navigation to load in-view; everything else is external. Returns the decision
+// so both the window-open handler and will-navigate can share one policy.
+function classifyNav(url, serviceBase) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return 'deny';
+  }
+  if (isLoginHost(host) || sameService(host, serviceBase)) return 'in-view';
+  return 'external';
+}
+
+// Only http/https may reach the OS browser. file://, smb://, custom app schemes,
+// etc. are dropped — shell.openExternal on those is an RCE/exfil primitive.
+function openExternalSafe(url) {
+  try {
+    const { protocol } = new URL(url);
+    if (protocol === 'http:' || protocol === 'https:') shell.openExternal(url);
+  } catch {}
 }
 
 function totalUnread() {
@@ -254,7 +305,8 @@ function createServiceView(s) {
     webPreferences: {
       partition: `persist:${s.id}`,
       backgroundThrottling: false, // keep unread counts live while in the background
-      contextIsolation: false, // let the preload hook the page's Badging API
+      contextIsolation: true, // isolate the preload world from the untrusted page
+      sandbox: true, // run the remote page in a sandboxed renderer
       preload: path.join(__dirname, 'service-preload.js'),
       additionalArguments: [`--service-id=${s.id}`],
     },
@@ -265,18 +317,23 @@ function createServiceView(s) {
   wc.setUserAgent(CHROME_UA);
   wc.loadURL(s.url, { userAgent: CHROME_UA });
 
-  // Unread is the max of three signals (see recompute): Badging API via the
-  // preload, tab-title "(N)", and an optional per-service DOM extractor.
+  // Unread is the max of three signals (see recompute): Badging API, tab-title
+  // "(N)", and an optional per-service DOM extractor. Title is event-driven.
+  // With contextIsolation+sandbox the preload can no longer patch the page's
+  // Badging API from an isolated world, so we hook it in the page's MAIN world
+  // via executeJavaScript on each load: the override stashes the latest count on
+  // a window global that we poll — same mechanism as the DOM extractor.
   wc.on('page-title-updated', (_e, title) => {
     unreadTitle[s.id] = parseUnread(title);
     recompute(s.id);
   });
+  wc.on('dom-ready', () => {
+    wc.executeJavaScript(BADGE_HOOK_JS).catch(() => {});
+  });
   setInterval(async () => {
     try {
-      unreadTitle[s.id] = parseUnread(await wc.executeJavaScript('document.title'));
-      if (s.unreadJs) {
-        unreadDom[s.id] = Number(await wc.executeJavaScript(s.unreadJs)) || 0;
-      }
+      unreadBadge[s.id] = Number(await wc.executeJavaScript('window.__earshotBadge|0')) || 0;
+      if (s.unreadJs) unreadDom[s.id] = Number(await wc.executeJavaScript(s.unreadJs)) || 0;
       recompute(s.id);
     } catch {}
   }, 4000);
@@ -288,20 +345,22 @@ function createServiceView(s) {
     }
   });
 
+  // Popups: login + same-service targets load in THIS view; external http/https
+  // links go to the real browser; everything else (bad scheme/URL) is dropped.
   wc.setWindowOpenHandler(({ url }) => {
-    let host = '';
-    try {
-      host = new URL(url).hostname;
-    } catch {
-      return { action: 'deny' };
-    }
-    // Login pages + same-domain app navigations load in THIS view (no popup window).
-    if (isLoginHost(host) || host.endsWith(serviceBase)) {
-      wc.loadURL(url);
-      return { action: 'deny' };
-    }
-    shell.openExternal(url); // truly external links → real browser
+    const decision = classifyNav(url, serviceBase);
+    if (decision === 'in-view') wc.loadURL(url);
+    else if (decision === 'external') openExternalSafe(url);
     return { action: 'deny' };
+  });
+
+  // Top-level self-navigation gets the same gate: only login + same-service hosts
+  // may load in the authenticated persist: session. Off-domain navigations are
+  // cancelled and handed to the external-browser path instead (M1, folded in).
+  wc.on('will-navigate', (e, url) => {
+    if (classifyNav(url, serviceBase) === 'in-view') return;
+    e.preventDefault();
+    openExternalSafe(url);
   });
 
   views[s.id] = view;
@@ -391,25 +450,44 @@ function createWindow() {
   layout();
 }
 
-ipcMain.handle('get-config', () => SERVICES);
-ipcMain.on('save-config', (_e, list) => applyConfig(list));
-ipcMain.on('close-settings', () => settingsWin?.close());
-ipcMain.on('switch', (_e, id) => {
-  if (views[id]) switchTo(id);
+// IPC comes only from our two local windows (sidebar + settings), both loaded via
+// loadFile from a file:// origin. Untrusted remote service views must never reach
+// these channels — save-config writes the config file and force-relaunches the app,
+// so an unchecked sender is at minimum a DoS knob. Match the caller's webContents to
+// the window a channel belongs to and require a file:// frame; reject anything else.
+function fromWindow(event, wc) {
+  return !!wc && event.sender === wc && (event.senderFrame?.url || '').startsWith('file://');
+}
+const fromSidebar = (event) => fromWindow(event, sidebar?.webContents);
+const fromSettings = (event) => fromWindow(event, settingsWin?.webContents);
+
+ipcMain.handle('get-config', (event) => (fromSettings(event) ? SERVICES : []));
+ipcMain.on('save-config', (event, list) => {
+  if (fromSettings(event)) applyConfig(list);
 });
-ipcMain.on('reorder', (_e, ids) => {
+ipcMain.on('close-settings', (event) => {
+  if (fromSettings(event)) settingsWin?.close();
+});
+ipcMain.on('switch', (event, id) => {
+  if (fromSidebar(event) && views[id]) switchTo(id);
+});
+ipcMain.on('reorder', (event, ids) => {
+  if (!fromSidebar(event)) return;
   order = normalizeOrder(ids);
   try {
     fs.writeFileSync(orderPath(), JSON.stringify(order));
   } catch {}
   sendState();
 });
-ipcMain.on('reload', () => views[activeId]?.webContents.reload());
-ipcMain.on('badge', (_e, id, n) => {
-  if (!(id in unreadBadge)) return;
-  unreadBadge[id] = Number(n) || 0;
-  recompute(id);
+ipcMain.on('reload', (event) => {
+  if (fromSidebar(event)) views[activeId]?.webContents.reload();
 });
+
+// Menubar app: the window is hidden ~all the time and the web views don't need
+// GPU-accelerated compositing. Dropping HW accel kills the separate GPU process
+// (~100-300MB) at the cost of slightly less-smooth rendering when visible.
+// Must be called before the app is ready.
+app.disableHardwareAcceleration();
 
 app.whenReady().then(() => {
   if (app.dock) app.dock.hide();

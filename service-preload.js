@@ -1,29 +1,6 @@
-// Runs inside each service page (contextIsolation off) so it can intercept the
-// Badging API the web apps use to report unread counts to the OS.
-const { ipcRenderer } = require('electron');
-
-const arg = process.argv.find((a) => a.startsWith('--service-id='));
-const id = arg ? arg.split('=')[1] : 'unknown';
-
-function report(n) {
-  ipcRenderer.send('badge', id, Number(n) || 0);
-}
-
-// Override on the prototype — direct assignment to navigator.setAppBadge can be
-// a silent no-op if the property is read-only.
-try {
-  Object.defineProperty(Navigator.prototype, 'setAppBadge', {
-    configurable: true,
-    value: (n) => {
-      report(n || 0);
-      return Promise.resolve();
-    },
-  });
-  Object.defineProperty(Navigator.prototype, 'clearAppBadge', {
-    configurable: true,
-    value: () => {
-      report(0);
-      return Promise.resolve();
-    },
-  });
-} catch (_e) {}
+// Service views now run with contextIsolation:true + sandbox:true, so a preload
+// running in the isolated world can no longer patch the page's Badging API.
+// Badge detection moved to a MAIN-world hook injected from main.js (BADGE_HOOK_JS)
+// and polled there, so this preload intentionally does nothing. It is kept as the
+// configured `preload` entry point (and a place to hang future isolated-world
+// bridges); remove the `preload:` option in createServiceView if it stays empty.
