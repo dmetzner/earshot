@@ -11,9 +11,29 @@ const {
 const path = require('node:path');
 const fs = require('node:fs');
 
+const CHROME_MAJOR = '140';
 const CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+  `(KHTML, like Gecko) Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`;
+
+// Full Chrome UA Client-Hint set. Google sign-in ("This browser or app may not
+// be secure") sniffs these: setUserAgent spoofs the UA string but Electron sends
+// NO Sec-CH-UA* hints, and their absence is itself the tell (real Chrome always
+// sends them). We inject the low-entropy hints plus the high-entropy ones the
+// OAuth consent page requests via Accept-CH, making us indistinguishable from
+// desktop Chrome so embedded Google logins pass.
+const CLIENT_HINTS = {
+  'sec-ch-ua': `"Chromium";v="${CHROME_MAJOR}", "Google Chrome";v="${CHROME_MAJOR}", "Not=A?Brand";v="24"`,
+  'sec-ch-ua-mobile': '?0',
+  'sec-ch-ua-platform': '"macOS"',
+  'sec-ch-ua-platform-version': '"15.5.0"',
+  'sec-ch-ua-full-version-list': `"Chromium";v="${CHROME_MAJOR}.0.0.0", "Google Chrome";v="${CHROME_MAJOR}.0.0.0", "Not=A?Brand";v="24.0.0.0"`,
+  'sec-ch-ua-full-version': `"${CHROME_MAJOR}.0.0.0"`,
+  'sec-ch-ua-arch': process.arch === 'arm64' ? '"arm"' : '"x86"',
+  'sec-ch-ua-bitness': '"64"',
+  'sec-ch-ua-model': '""',
+  'sec-ch-ua-wow64': '?0',
+};
 
 const SIDEBAR_W = 72;
 
@@ -223,6 +243,24 @@ function sameService(host, serviceBase) {
   return host === serviceBase || host.endsWith(`.${serviceBase}`);
 }
 
+// Some services wrap outbound links in a SAME-domain redirector — Gmail/Google
+// Chat send you through https://www.google.com/url?q=<real target>. Left in-view
+// these hijack the app pane (base domain matches, so classifyNav would allow
+// them); detect them and hand off the *real* target to the OS browser instead.
+function redirectTarget(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (/(^|\.)google\.[a-z.]+$/.test(u.hostname) && u.pathname === '/url') {
+    const t = u.searchParams.get('q') || u.searchParams.get('url');
+    if (t && /^https?:\/\//i.test(t)) return t;
+  }
+  return null;
+}
+
 // Gate a target URL for a service view: allow login hosts + same-service
 // navigation to load in-view; everything else is external. Returns the decision
 // so both the window-open handler and will-navigate can share one policy.
@@ -233,16 +271,19 @@ function classifyNav(url, serviceBase) {
   } catch {
     return 'deny';
   }
+  if (redirectTarget(url)) return 'external';
   if (isLoginHost(host) || sameService(host, serviceBase)) return 'in-view';
   return 'external';
 }
 
 // Only http/https may reach the OS browser. file://, smb://, custom app schemes,
 // etc. are dropped — shell.openExternal on those is an RCE/exfil primitive.
+// Redirector URLs are unwrapped so the browser opens the real destination.
 function openExternalSafe(url) {
+  const target = redirectTarget(url) || url;
   try {
-    const { protocol } = new URL(url);
-    if (protocol === 'http:' || protocol === 'https:') shell.openExternal(url);
+    const { protocol } = new URL(target);
+    if (protocol === 'http:' || protocol === 'https:') shell.openExternal(target);
   } catch {}
 }
 
@@ -315,6 +356,19 @@ function createServiceView(s) {
   const serviceBase = baseDomain(new URL(s.url).hostname);
 
   wc.setUserAgent(CHROME_UA);
+
+  // Inject a Chrome-branded UA Client-Hint set (setUserAgent doesn't touch these,
+  // and Electron sends none — their absence flags the embedded browser) so Google's
+  // login sniffing accepts the flow. Drop any pre-existing hints first, then set ours.
+  wc.session.webRequest.onBeforeSendHeaders((details, cb) => {
+    const h = details.requestHeaders;
+    for (const k of Object.keys(h)) {
+      if (/^sec-ch-ua/i.test(k)) delete h[k];
+    }
+    Object.assign(h, CLIENT_HINTS);
+    cb({ requestHeaders: h });
+  });
+
   wc.loadURL(s.url, { userAgent: CHROME_UA });
 
   // Unread is the max of three signals (see recompute): Badging API, tab-title
@@ -481,6 +535,23 @@ ipcMain.on('reorder', (event, ids) => {
 });
 ipcMain.on('reload', (event) => {
   if (fromSidebar(event)) views[activeId]?.webContents.reload();
+});
+ipcMain.on('back', (event) => {
+  if (!fromSidebar(event)) return;
+  const nav = views[activeId]?.webContents.navigationHistory;
+  if (nav?.canGoBack()) nav.goBack();
+});
+ipcMain.on('forward', (event) => {
+  if (!fromSidebar(event)) return;
+  const nav = views[activeId]?.webContents.navigationHistory;
+  if (nav?.canGoForward()) nav.goForward();
+});
+// Home: reload the active service's start URL — the reliable escape from a page
+// the in-view nav gate got stuck on (e.g. a login dead-end) when back isn't enough.
+ipcMain.on('home', (event) => {
+  if (!fromSidebar(event)) return;
+  const s = SERVICES.find((x) => x.id === activeId);
+  if (s) views[activeId]?.webContents.loadURL(s.url, { userAgent: CHROME_UA });
 });
 
 // Menubar app: the window is hidden ~all the time and the web views don't need

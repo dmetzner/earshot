@@ -69,7 +69,38 @@
     display: none;
   }
   .badge.show { display: block; }
+  /* nav row (back / home) pinned above the service list */
+  .nav {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #2b2d31;
+    margin-bottom: 4px;
+  }
+  .navbtn {
+    width: 20px;
+    height: 20px;
+    border-radius: 7px;
+    background: #2b2d31;
+    color: #dbdee1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    transition: background .15s ease;
+  }
+  .navbtn:hover { background: #404249; }
+  .navbtn:active { background: #4752c4; }
 </style>
+<div class="nav">
+  <div class="navbtn" id="back" title="Back">‹</div>
+  <div class="navbtn" id="forward" title="Forward">›</div>
+  <div class="navbtn" id="home" title="Home (reload service)">⌂</div>
+</div>
 <div id="list"></div>
 <script>
   const list = document.getElementById('list');
@@ -142,6 +173,10 @@
     // Apply the order from main (loaded/saved), but never fight an in-progress drag.
     if (!dragging) for (const s of state.services) list.appendChild(els[s.id]);
   }
+
+  document.getElementById('back').onclick = () => window.hub.back();
+  document.getElementById('forward').onclick = () => window.hub.forward();
+  document.getElementById('home').onclick = () => window.hub.home();
 
   window.hub.onState(render);
 </script>
