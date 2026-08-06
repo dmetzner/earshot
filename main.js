@@ -50,6 +50,56 @@ const GCHAT_UNREAD_JS = `(() => {
   return total;
 })()`;
 
+// Who it is from, per service. Counts come from three generic signals (title, Badging
+// API, unreadJs); a NAME only ever comes from the service's own DOM, so each of these is
+// a bespoke, deliberately fragile extractor. Contract: return an array of strings, newest
+// first, or [] when the selectors no longer match — an empty answer degrades the dashboard
+// row to a bare count, which is why none of them throws or guesses. Capped at 5 in the
+// caller (sanitizeSenders), which also bounds the length: this is untrusted page text.
+const GMAIL_SENDERS_JS = `(() => {
+  const out = [];
+  for (const tr of document.querySelectorAll('tr.zE')) {
+    const el = tr.querySelector('.yW span[name], .yW span[email], .yW span');
+    const t = (el?.getAttribute('name') || el?.textContent || '').trim();
+    if (t && !out.includes(t)) out.push(t);
+    if (out.length >= 5) break;
+  }
+  return out;
+})()`;
+
+// Chat has no unread class to hook: the aria-label carries both the name and the count
+// ("Daniel Metzner, 2 unread messages"), so the name is the part before the first comma.
+const GCHAT_SENDERS_JS = `(() => {
+  const re = /(ungelesene?\\s+Nachricht|unread\\s+(message|conversation))/i;
+  const out = [];
+  for (const el of document.querySelectorAll('[aria-label]')) {
+    const label = el.getAttribute('aria-label') || '';
+    if (!re.test(label)) continue;
+    const name = label.split(',')[0].trim();
+    if (name && !/^\\d+$/.test(name) && !out.includes(name)) out.push(name);
+    if (out.length >= 5) break;
+  }
+  return out;
+})()`;
+
+// WhatsApp: chat-list rows are listitems; the unread pill is an aria-label somewhere
+// inside the row ("2 unread messages"), the chat name is a title attribute on the row.
+// Both are searched loosely on purpose — this DOM is obfuscated and reshuffled often, and
+// a miss here costs the names, not the count.
+const WHATSAPP_SENDERS_JS = `(() => {
+  const out = [];
+  for (const row of document.querySelectorAll('[role="listitem"], [role="row"]')) {
+    const marked = [...row.querySelectorAll('[aria-label]')].some((el) =>
+      /(unread|ungelesen)/i.test(el.getAttribute('aria-label') || ''));
+    if (!marked) continue;
+    const named = row.querySelector('[title]');
+    const t = (named?.getAttribute('title') || named?.textContent || '').trim();
+    if (t && !out.includes(t)) out.push(t);
+    if (out.length >= 5) break;
+  }
+  return out;
+})()`;
+
 // Injected into each service page's MAIN world (see createServiceView). Overrides
 // the Badging API so the latest count is stashed on window.__earshotBadge, which
 // main polls. Guarded so re-injection on each load is a no-op.
@@ -71,6 +121,9 @@ const BADGE_HOOK_JS = `(() => {
 
 // Seed config — written to services.json on first run, then managed via the Settings
 // window. prio 'high' → red menubar alert; 'low' → shown quietly. Each gets its own session.
+// `group` is not about this app at all: it is which of Mission Control's modes the service
+// belongs to (`work` / `private`), exported in the state file so the dashboard can scope a
+// row without a second copy of this list living over there.
 const DEFAULT_SERVICES = [
   {
     id: 'gchat',
@@ -78,7 +131,9 @@ const DEFAULT_SERVICES = [
     url: 'https://chat.google.com',
     emoji: '💬',
     prio: 'high',
+    group: 'work',
     unreadJs: GCHAT_UNREAD_JS,
+    sendersJs: GCHAT_SENDERS_JS,
   },
   {
     id: 'gmail',
@@ -86,6 +141,8 @@ const DEFAULT_SERVICES = [
     url: 'https://mail.google.com/mail/u/0/#inbox',
     emoji: '✉️',
     prio: 'high',
+    group: 'work',
+    sendersJs: GMAIL_SENDERS_JS,
   },
   {
     id: 'gmailpriv',
@@ -93,10 +150,34 @@ const DEFAULT_SERVICES = [
     url: 'https://mail.google.com/mail/u/0/#inbox',
     emoji: '📧',
     prio: 'low',
+    group: 'private',
+    sendersJs: GMAIL_SENDERS_JS,
   },
-  { id: 'slack', name: 'Slack', url: 'https://app.slack.com/client', emoji: '💼', prio: 'high' },
-  { id: 'whatsapp', name: 'WhatsApp', url: 'https://web.whatsapp.com', emoji: '🟢', prio: 'low' },
-  { id: 'discord', name: 'Discord', url: 'https://discord.com/app', emoji: '🎮', prio: 'low' },
+  {
+    id: 'slack',
+    name: 'Slack',
+    url: 'https://app.slack.com/client',
+    emoji: '💼',
+    prio: 'high',
+    group: 'work',
+  },
+  {
+    id: 'whatsapp',
+    name: 'WhatsApp',
+    url: 'https://web.whatsapp.com',
+    emoji: '🟢',
+    prio: 'low',
+    group: 'private',
+    sendersJs: WHATSAPP_SENDERS_JS,
+  },
+  {
+    id: 'discord',
+    name: 'Discord',
+    url: 'https://discord.com/app',
+    emoji: '🎮',
+    prio: 'low',
+    group: 'private',
+  },
 ];
 let SERVICES = DEFAULT_SERVICES; // replaced by loadServices() at startup
 
@@ -109,6 +190,7 @@ const unread = {}; // id -> effective unread count
 const unreadTitle = {}; // id -> count parsed from tab title
 const unreadBadge = {}; // id -> count from the Badging API
 const unreadDom = {}; // id -> count from a per-service DOM extractor
+const senders = {}; // id -> string[] of who the unread ones are from (sendersJs)
 const icons = {}; // id -> favicon URL
 let activeId = SERVICES[0].id;
 let order = SERVICES.map((s) => s.id); // sidebar display order, user-reorderable
@@ -140,16 +222,43 @@ function normalizeServices(list) {
         url: String(s.url).trim(),
         emoji: String(s.emoji || '•').trim() || '•',
         prio: s.prio === 'high' ? 'high' : 'low',
+        group: s.group === 'work' ? 'work' : 'private',
       };
       if (s.unreadJs) out.unreadJs = s.unreadJs;
+      if (s.sendersJs) out.sendersJs = s.sendersJs;
       return out;
     });
+}
+// A services.json written by an older version has no `group` and no `sendersJs`, and
+// normalizeServices would happily call that "everything private, nobody named" — a
+// silent downgrade of a config Daniel never edited. So for a seed service (matched by
+// id) fill the fields the saved copy simply predates, and persist the result. Only ever
+// fills in what is ABSENT: a value he chose in the Settings window wins.
+function backfillFromDefaults(list) {
+  let changed = false;
+  for (const s of list) {
+    const seed = DEFAULT_SERVICES.find((d) => d.id === s.id);
+    if (!seed) continue;
+    for (const key of ['group', 'unreadJs', 'sendersJs']) {
+      if (seed[key] && !s[key]) {
+        s[key] = seed[key];
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 function loadServices() {
   try {
     const saved = JSON.parse(fs.readFileSync(servicesPath(), 'utf8'));
     if (Array.isArray(saved) && saved.length) {
+      const filled = backfillFromDefaults(saved);
       SERVICES = normalizeServices(saved);
+      if (filled) {
+        try {
+          fs.writeFileSync(servicesPath(), JSON.stringify(SERVICES, null, 2));
+        } catch {}
+      }
       return;
     }
   } catch {}
@@ -220,8 +329,18 @@ function togglePrio(id) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  // A second launch is how macOS delivers an `earshot://` link to the running instance
+  // when the app was already up; argv carries it. `open-url` covers the other path.
+  app.on('second-instance', (_e, argv) => {
+    const link = argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
+    if (link) handleDeepLink(link);
+    else showWindow();
+  });
 }
+app.on('open-url', (e, url) => {
+  e.preventDefault();
+  handleDeepLink(url);
+});
 
 function parseUnread(title) {
   // Chat/Slack/WhatsApp/Discord all put the count in the tab title: "(3) ..." / "(9+)".
@@ -291,6 +410,84 @@ function totalUnread() {
   return Object.values(unread).reduce((a, b) => a + b, 0);
 }
 
+// ---- state export (Mission Control reads this file) ------------------------
+// The menubar is the live view; this file is the same picture for anything else on the
+// machine. Written to userData/unread.json via tmp + rename, because the reader polls it
+// and a half-written file must never be observable.
+//
+// The `at` stamp is a HEARTBEAT, not a change log: it is refreshed every
+// STATE_HEARTBEAT_MS whether or not anything moved, so a reader can tell "no unread
+// messages" (fresh file, all zeros) from "earshot is not running" (stale file). A quiet
+// app writing nothing looks identical to a dead one otherwise, and zeros rendered as an
+// all-clear is the failure worth spending a timer on.
+function statePath() {
+  return path.join(app.getPath('userData'), 'unread.json');
+}
+const STATE_HEARTBEAT_MS = 30000;
+const STATE_MIN_INTERVAL_MS = 1000; // recompute fires per title event; don't churn the disk
+let stateWrittenAt = 0;
+let stateTimer = null;
+
+// Senders come out of an untrusted page (see the *_SENDERS_JS constants) and end up in a
+// file, then in the dashboard's HTML. Bound them here, at the only place they enter our
+// own data: strings only, 5 max, 60 chars, no control characters.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+const CTRL_RE = /[\u0000-\u001f\u007f]/g;
+function sanitizeSenders(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((x) => typeof x === 'string')
+    .map((x) => x.replace(CTRL_RE, ' ').trim().slice(0, 60))
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function writeState(force) {
+  const now = Date.now();
+  if (!force && now - stateWrittenAt < STATE_MIN_INTERVAL_MS) return;
+  stateWrittenAt = now;
+  const payload = {
+    at: new Date(now).toISOString(),
+    total: totalUnread(),
+    services: orderedServices()
+      .filter(Boolean)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        emoji: s.emoji,
+        prio: prio[s.id] || s.prio,
+        group: s.group || 'private',
+        unread: unread[s.id] || 0,
+        senders: senders[s.id] || [],
+      })),
+  };
+  const p = statePath();
+  const tmp = `${p}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
+    fs.renameSync(tmp, p);
+  } catch {}
+}
+
+// ---- deep link: earshot://open/<service-id> --------------------------------
+// So a click in Mission Control lands on the right tab. The id is matched against the
+// services we actually built views for and nothing else — in particular there is
+// deliberately NO url parameter: any process on this machine can open a URL scheme, and
+// "load this address in one of my logged-in sessions" is not a knob to hand out.
+function handleDeepLink(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return;
+  }
+  if (u.protocol !== 'earshot:') return;
+  showWindow();
+  // earshot://open/gchat -> host 'open', pathname '/gchat'
+  const id = decodeURIComponent(u.pathname.replace(/^\/+/, ''));
+  if (u.host === 'open' && id && views[id]) switchTo(id);
+}
+
 function sendState() {
   if (!sidebar) return;
   sidebar.webContents.send('state', {
@@ -339,6 +536,7 @@ function recompute(id) {
   unread[id] = Math.max(unreadTitle[id] || 0, unreadBadge[id] || 0, unreadDom[id] || 0);
   updateTray();
   sendState();
+  writeState();
 }
 
 function createServiceView(s) {
@@ -389,6 +587,17 @@ function createServiceView(s) {
       unreadBadge[s.id] = Number(await wc.executeJavaScript('window.__earshotBadge|0')) || 0;
       if (s.unreadJs) unreadDom[s.id] = Number(await wc.executeJavaScript(s.unreadJs)) || 0;
       recompute(s.id);
+      // Names only while something is unread — with an empty inbox there is nobody to
+      // name, and the extractor would still walk the whole DOM every 4s in a background
+      // view. Runs after recompute so it reads this tick's count, not the last one.
+      if (s.sendersJs) {
+        const next =
+          unread[s.id] > 0 ? sanitizeSenders(await wc.executeJavaScript(s.sendersJs)) : [];
+        if (JSON.stringify(next) !== JSON.stringify(senders[s.id] || [])) {
+          senders[s.id] = next;
+          writeState(true); // a changed sender list is news even when the count didn't move
+        }
+      }
     } catch {}
   }, 4000);
 
@@ -567,6 +776,9 @@ app.whenReady().then(() => {
   loadOrder();
   loadPrio();
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+  // `earshot://open/<id>` — registered at runtime so a dev run (`npm start`) answers it
+  // too, not only the packaged app.
+  app.setAsDefaultProtocolClient('earshot');
 
   tray = new Tray(nativeImage.createEmpty());
   updateTray(); // sets title + tooltip
@@ -605,4 +817,16 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+  // After the views exist, so the very first file already carries every service id.
+  writeState(true);
+  stateTimer = setInterval(() => writeState(true), STATE_HEARTBEAT_MS);
+});
+
+// A stale unread.json is how a reader knows earshot is gone; make that immediate on a
+// clean quit instead of waiting for the heartbeat to age out.
+app.on('will-quit', () => {
+  if (stateTimer) clearInterval(stateTimer);
+  try {
+    fs.unlinkSync(statePath());
+  } catch {}
 });

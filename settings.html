@@ -44,7 +44,9 @@
 
 <h1>Services</h1>
 <p class="hint">Add, edit, reorder or remove chat services. Each is an isolated login.
-Saving restarts the app to apply (your logins are kept).</p>
+Saving restarts the app to apply (your logins are kept).
+<br />Priority drives the menubar; <b>Mode</b> only says which Mission Control mode
+(private / work) shows this service on the dashboard.</p>
 
 <table>
   <thead>
@@ -54,6 +56,7 @@ Saving restarts the app to apply (your logins are kept).</p>
       <th>Name</th>
       <th>URL</th>
       <th class="colp">Priority</th>
+      <th class="colp">Mode</th>
       <th></th>
     </tr>
   </thead>
@@ -78,6 +81,7 @@ Saving restarts the app to apply (your logins are kept).</p>
     tr.draggable = true;
     tr.dataset.id = s.id || '';
     tr.dataset.unreadJs = s.unreadJs || '';
+    tr.dataset.sendersJs = s.sendersJs || '';
     tr.innerHTML = `
       <td class="drag">⠿</td>
       <td class="emoji"><input class="f-emoji" maxlength="4" value="${(s.emoji || '').replace(/"/g, '&quot;')}" /></td>
@@ -86,6 +90,10 @@ Saving restarts the app to apply (your logins are kept).</p>
       <td><select class="f-prio">
         <option value="high"${s.prio === 'high' ? ' selected' : ''}>High (red)</option>
         <option value="low"${s.prio !== 'high' ? ' selected' : ''}>Low (quiet)</option>
+      </select></td>
+      <td><select class="f-group">
+        <option value="private"${s.group !== 'work' ? ' selected' : ''}>Private</option>
+        <option value="work"${s.group === 'work' ? ' selected' : ''}>Work</option>
       </select></td>
       <td><button type="button" class="del" title="Remove">✕</button></td>`;
     tr.querySelector('.del').onclick = () => tr.remove();
@@ -113,10 +121,12 @@ Saving restarts the app to apply (your logins are kept).</p>
     const list = [...rows.querySelectorAll('.row')].map((tr) => ({
       id: tr.dataset.id || undefined,
       unreadJs: tr.dataset.unreadJs || undefined,
+      sendersJs: tr.dataset.sendersJs || undefined,
       emoji: tr.querySelector('.f-emoji').value.trim(),
       name: tr.querySelector('.f-name').value.trim(),
       url: tr.querySelector('.f-url').value.trim(),
       prio: tr.querySelector('.f-prio').value,
+      group: tr.querySelector('.f-group').value,
     }));
     const bad = list.find((s) => !s.name || !s.url);
     if (bad) { err.textContent = 'Every service needs a name and a URL.'; return; }
