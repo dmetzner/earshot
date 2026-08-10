@@ -38,4 +38,15 @@ jobs:
             echo "no open Dependabot pull request for $HEAD_BRANCH — nothing to merge"
             exit 0
           fi
+          # GITHUB_TOKEN is a GitHub App token, and an App may only touch
+          # .github/workflows/** while holding the `workflows` permission — which a workflow
+          # `permissions:` block cannot grant (it is a PAT/App-install scope, not one of the
+          # keys Actions accepts). So a bump that edits a workflow file can never be merged
+          # from here; `/tidy` merges those with a token that has the scope.
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$number/files" \
+            --jq '.[].filename')
+          if grep -q '^\.github/workflows/' <<< "$files"; then
+            echo "::notice::#$number touches .github/workflows/** — GITHUB_TOKEN cannot merge it, left for /tidy"
+            exit 0
+          fi
           gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
