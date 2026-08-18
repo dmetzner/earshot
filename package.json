@@ -23,7 +23,7 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
-    "electron": "^43.3.0"
+    "@biomejs/biome": "2.5.8",
+    "electron": "^43.4.0"
   }
 }
