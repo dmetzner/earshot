@@ -1,0 +1,140 @@
+<meta charset="utf-8" />
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self';"
+/>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 18px 20px;
+    background: #1e1f22; color: #dbdee1;
+    font-family: -apple-system, system-ui, sans-serif; font-size: 13px;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.hint { margin: 0 0 16px; color: #949ba4; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 600; color: #949ba4; font-size: 11px; padding: 0 6px 6px; }
+  td { padding: 3px 6px; vertical-align: middle; }
+  input, select {
+    width: 100%; background: #2b2d31; border: 1px solid #1e1f22; color: #dbdee1;
+    border-radius: 6px; padding: 6px 8px; font-size: 13px;
+  }
+  input:focus, select:focus { outline: none; border-color: #5865f2; }
+  .emoji { text-align: center; }
+  .drag { cursor: grab; color: #6d7178; text-align: center; width: 18px; }
+  .del {
+    background: none; border: none; color: #f23f42; cursor: pointer;
+    font-size: 16px; padding: 0 4px;
+  }
+  tr.row.dragging { opacity: .4; }
+  .actions { margin-top: 18px; display: flex; gap: 10px; align-items: center; }
+  button.btn {
+    border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px;
+    font-weight: 600; cursor: pointer;
+  }
+  .add { background: #2b2d31; color: #dbdee1; }
+  .save { background: #5865f2; color: #fff; }
+  .cancel { background: transparent; color: #949ba4; }
+  .spacer { flex: 1; }
+  .err { color: #f23f42; font-size: 12px; margin-top: 8px; min-height: 16px; }
+  th.colw, td.colw { width: 56px; }
+  th.colp, td.colp { width: 90px; }
+</style>
+
+<h1>Services</h1>
+<p class="hint">Add, edit, reorder or remove chat services. Each is an isolated login.
+Saving restarts the app to apply (your logins are kept).
+<br />Priority drives the menubar; <b>Mode</b> is only a label (private / work)
+passed through to the exported state file for other tools to filter on.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th></th>
+      <th class="colw">Icon</th>
+      <th>Name</th>
+      <th>URL</th>
+      <th class="colp">Priority</th>
+      <th class="colp">Mode</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<div class="actions">
+  <button type="button" class="btn add" id="add">+ Add service</button>
+  <div class="spacer"></div>
+  <button type="button" class="btn cancel" id="cancel">Cancel</button>
+  <button type="button" class="btn save" id="save">Save &amp; Restart</button>
+</div>
+<div class="err" id="err"></div>
+
+<script>
+  const rows = document.getElementById('rows');
+  const err = document.getElementById('err');
+
+  function makeRow(s = {}) {
+    const tr = document.createElement('tr');
+    tr.className = 'row';
+    tr.draggable = true;
+    tr.dataset.id = s.id || '';
+    tr.dataset.unreadJs = s.unreadJs || '';
+    tr.dataset.sendersJs = s.sendersJs || '';
+    tr.innerHTML = `
+      <td class="drag">⠿</td>
+      <td class="emoji"><input class="f-emoji" maxlength="4" value="${(s.emoji || '').replace(/"/g, '&quot;')}" /></td>
+      <td><input class="f-name" value="${(s.name || '').replace(/"/g, '&quot;')}" placeholder="Slack" /></td>
+      <td><input class="f-url" value="${(s.url || '').replace(/"/g, '&quot;')}" placeholder="https://app.slack.com/client" /></td>
+      <td><select class="f-prio">
+        <option value="high"${s.prio === 'high' ? ' selected' : ''}>High (red)</option>
+        <option value="low"${s.prio !== 'high' ? ' selected' : ''}>Low (quiet)</option>
+      </select></td>
+      <td><select class="f-group">
+        <option value="private"${s.group !== 'work' ? ' selected' : ''}>Private</option>
+        <option value="work"${s.group === 'work' ? ' selected' : ''}>Work</option>
+      </select></td>
+      <td><button type="button" class="del" title="Remove">✕</button></td>`;
+    tr.querySelector('.del').onclick = () => tr.remove();
+
+    tr.addEventListener('dragstart', () => tr.classList.add('dragging'));
+    tr.addEventListener('dragend', () => tr.classList.remove('dragging'));
+    return tr;
+  }
+
+  rows.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const dragEl = rows.querySelector('.dragging');
+    if (!dragEl) return;
+    const after = [...rows.querySelectorAll('.row:not(.dragging)')].find((r) => {
+      const box = r.getBoundingClientRect();
+      return e.clientY < box.top + box.height / 2;
+    });
+    if (after) rows.insertBefore(dragEl, after);
+    else rows.appendChild(dragEl);
+  });
+
+  document.getElementById('add').onclick = () => rows.appendChild(makeRow());
+  document.getElementById('cancel').onclick = () => window.cfg.cancel();
+  document.getElementById('save').onclick = () => {
+    const list = [...rows.querySelectorAll('.row')].map((tr) => ({
+      id: tr.dataset.id || undefined,
+      unreadJs: tr.dataset.unreadJs || undefined,
+      sendersJs: tr.dataset.sendersJs || undefined,
+      emoji: tr.querySelector('.f-emoji').value.trim(),
+      name: tr.querySelector('.f-name').value.trim(),
+      url: tr.querySelector('.f-url').value.trim(),
+      prio: tr.querySelector('.f-prio').value,
+      group: tr.querySelector('.f-group').value,
+    }));
+    const bad = list.find((s) => !s.name || !s.url);
+    if (bad) { err.textContent = 'Every service needs a name and a URL.'; return; }
+    if (!list.length) { err.textContent = 'Add at least one service.'; return; }
+    window.cfg.save(list);
+  };
+
+  window.cfg.get().then((services) => {
+    for (const s of services) rows.appendChild(makeRow(s));
+  });
+</script>

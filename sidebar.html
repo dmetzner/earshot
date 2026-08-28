@@ -1,0 +1,182 @@
+<meta charset="utf-8" />
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:;"
+/>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; }
+  body {
+    background: #1e1f22;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0;
+    font-family: -apple-system, system-ui, sans-serif;
+    overflow: hidden;
+  }
+  .item {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+    background: #2b2d31;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: border-radius .15s ease, background .15s ease;
+    overflow: visible;
+  }
+  .item:hover { border-radius: 16px; background: #35373c; }
+  .item.active { border-radius: 16px; background: #404249; }
+  .item.dragging { opacity: .4; }
+  /* active pill on the left edge */
+  .item.active::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: 28px;
+    border-radius: 0 4px 4px 0;
+    background: #fff;
+  }
+  .item img { width: 30px; height: 30px; border-radius: 8px; }
+  .item .letter {
+    font-size: 18px;
+    font-weight: 600;
+    color: #dbdee1;
+  }
+  .badge {
+    position: absolute;
+    bottom: -3px;
+    right: -3px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: #f23f42;
+    border: 3px solid #1e1f22;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+    display: none;
+  }
+  .badge.show { display: block; }
+  /* nav row (back / home) pinned above the service list */
+  .nav {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #2b2d31;
+    margin-bottom: 4px;
+  }
+  .navbtn {
+    width: 20px;
+    height: 20px;
+    border-radius: 7px;
+    background: #2b2d31;
+    color: #dbdee1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    transition: background .15s ease;
+  }
+  .navbtn:hover { background: #404249; }
+  .navbtn:active { background: #4752c4; }
+</style>
+<div class="nav">
+  <div class="navbtn" id="back" title="Back">‹</div>
+  <div class="navbtn" id="forward" title="Forward">›</div>
+  <div class="navbtn" id="home" title="Home (reload service)">⌂</div>
+</div>
+<div id="list"></div>
+<script>
+  const list = document.getElementById('list');
+  const els = {};
+  let dragging = false;
+
+  // ---- drag-to-reorder ----
+  function afterElement(y) {
+    const items = [...list.querySelectorAll('.item:not(.dragging)')];
+    let closest = { offset: -Infinity, el: null };
+    for (const child of items) {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) closest = { offset, el: child };
+    }
+    return closest.el;
+  }
+  list.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const dragEl = list.querySelector('.dragging');
+    if (!dragEl) return;
+    const after = afterElement(e.clientY);
+    if (after == null) list.appendChild(dragEl);
+    else list.insertBefore(dragEl, after);
+  });
+
+  function render(state) {
+    state.services.forEach((s) => {
+      let el = els[s.id];
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'item';
+        el.title = s.name;
+        el.dataset.id = s.id;
+        el.draggable = true;
+        el.onclick = () => { if (!dragging) window.hub.switch(s.id); };
+        el.addEventListener('dragstart', () => { dragging = true; el.classList.add('dragging'); });
+        el.addEventListener('dragend', () => {
+          el.classList.remove('dragging');
+          dragging = false;
+          window.hub.reorder([...list.querySelectorAll('.item')].map((n) => n.dataset.id));
+        });
+        el.innerHTML =
+          `<span class="letter">${s.name[0]}</span>` +
+          `<span class="badge"></span>`;
+        list.appendChild(el);
+        els[s.id] = el;
+      }
+      // real icon (favicon) once we have it
+      if (s.icon) {
+        let img = el.querySelector('img');
+        if (!img) {
+          img = document.createElement('img');
+          img.onerror = () => img.remove(); // fall back to the letter
+          el.insertBefore(img, el.querySelector('.badge'));
+          el.querySelector('.letter').style.display = 'none';
+        }
+        if (img.src !== s.icon) img.src = s.icon;
+      }
+      // unread badge
+      const badge = el.querySelector('.badge');
+      if (s.unread > 0) {
+        badge.textContent = s.unread > 99 ? '99+' : s.unread;
+        badge.classList.add('show');
+      } else {
+        badge.classList.remove('show');
+      }
+      el.classList.toggle('active', s.id === state.activeId);
+    });
+    // Apply the order from main (loaded/saved), but never fight an in-progress drag.
+    if (!dragging) for (const s of state.services) list.appendChild(els[s.id]);
+  }
+
+  document.getElementById('back').onclick = () => window.hub.back();
+  document.getElementById('forward').onclick = () => window.hub.forward();
+  document.getElementById('home').onclick = () => window.hub.home();
+
+  window.hub.onState(render);
+</script>

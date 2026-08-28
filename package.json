@@ -1,0 +1,29 @@
+{
+  "name": "earshot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stay within earshot of every chat — a macOS menubar hub for Google Chat, Gmail, Slack, WhatsApp, Discord and any web chat, with per-service priority and unread counts.",
+  "author": "Daniel Metzner",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dmetzner/earshot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dmetzner/earshot/issues"
+  },
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "./build.sh",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "electron": "^43.4.0"
+  }
+}

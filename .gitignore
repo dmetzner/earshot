@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+*.log
+
+# local agent/editor state — never part of the public repo
+.claude/settings.local.json

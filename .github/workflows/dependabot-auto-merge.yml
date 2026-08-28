@@ -1,0 +1,52 @@
+name: Dependabot auto-merge
+
+# Dependency bumps should not wait on a human. This merges them once CI has passed.
+#
+# The green check happens here rather than in GitHub's auto-merge, because auto-merge only
+# waits for *required* status checks — and this repository is private on a plan where branch
+# protection is unavailable, so there is nothing that can be marked required. Gating on
+# `workflow_run.conclusion` is therefore the only thing keeping a red bump out of main.
+#
+# Consequence worth knowing: only the workflows listed below are covered. If another
+# pull-request-triggered workflow is ever added here, add it to `workflows:` too, otherwise
+# its result is ignored when deciding to merge.
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge the Dependabot pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
+            --json number,author --jq '.[] | select(.author.login == "app/dependabot") | .number' | head -1)
+          if [ -z "$number" ]; then
+            echo "no open Dependabot pull request for $HEAD_BRANCH — nothing to merge"
+            exit 0
+          fi
+          # GITHUB_TOKEN is a GitHub App token, and an App may only touch
+          # .github/workflows/** while holding the `workflows` permission — which a workflow
+          # `permissions:` block cannot grant (it is a PAT/App-install scope, not one of the
+          # keys Actions accepts). So a bump that edits a workflow file can never be merged
+          # from here; `/tidy` merges those with a token that has the scope.
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$number/files" \
+            --jq '.[].filename')
+          if grep -q '^\.github/workflows/' <<< "$files"; then
+            echo "::notice::#$number touches .github/workflows/** — GITHUB_TOKEN cannot merge it, left for /tidy"
+            exit 0
+          fi
+          gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
