@@ -46,6 +46,7 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
   [Integrating with other tools](#integrating-with-other-tools).
 - **Indicator-only** (no dock icon on macOS, no taskbar button on Windows), **auto-starts at
   login**, single-instance.
+- **Cleans up after itself while you are away** — see below.
 
 ## Install / Build
 
@@ -68,6 +69,24 @@ Development (runs from source, prints logs to the terminal):
 ```bash
 npm start
 ```
+
+## Running for weeks
+
+Earshot keeps eight chat SPAs loaded at all times — that is what makes the counts live,
+and it is not free. Measured six hours after a cold start: 4.0 GB resident, the five heavy
+services 350–650 MB each, and 1.5 GB in the userData directory (840 MB of it HTTP cache).
+Neither number is one you should have to go and reset by hand, so Earshot does it while the
+window is put away — after 30 minutes hidden, once every 5 minutes:
+
+- each service's HTTP cache and compiled-code cache are emptied, once a day, and each
+  cache is capped at 48 MB regardless. Cookies, IndexedDB and service workers are never
+  touched — those are your logins and the apps' own offline stores.
+- one service view at a time is reloaded, oldest load first, if it has been up more than
+  6 hours. This is the only thing that actually gives a renderer its memory back.
+
+Counts survive both — they are re-derived from the page. The one thing a reload does cost
+you: **text typed into a service and never sent is gone.** The view you last had open is
+never recycled for exactly that reason, and nothing is recycled while the window is up.
 
 ## Configuration
 
