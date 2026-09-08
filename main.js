@@ -329,9 +329,10 @@ function togglePrio(id) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // A second launch is how an `earshot://` link reaches the running instance; argv
-  // carries it. That is one of two paths on macOS (`open-url` below is the other) and
-  // the ONLY one on Windows, which has no open-url event at all.
+  // A second launch is how an `earshot://` link reaches the ALREADY-RUNNING instance;
+  // argv carries it. That is one of two paths on macOS (`open-url` below is the other)
+  // and the only such path on Windows, which has no open-url event at all — a link that
+  // starts the app cold is picked out of our own argv in whenReady instead.
   app.on('second-instance', (_e, argv) => {
     const link = argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
     if (link) handleDeepLink(link);
@@ -551,14 +552,16 @@ function paintTray(scale, disc, label) {
     px[o + 3] = a;
   };
   // Filled disc with a one-pixel alpha ramp at the rim: a hard-edged circle reads as a
-  // rendering fault at 16 px beside the system's own icons.
+  // rendering fault at 16 px beside the system's own icons. So the test is coverage, not
+  // membership — `rad - d` is how far inside the rim the pixel centre falls, clamped to
+  // one DEVICE pixel of ramp at either scale factor.
   const c = size / 2;
   const rad = c - 0.5 * scale;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const d = Math.hypot(x + 0.5 - c, y + 0.5 - c);
-      if (d > rad) continue;
-      set(x, y, disc, Math.round(255 * Math.min(1, rad - d + 1)));
+      const cov = rad - Math.hypot(x + 0.5 - c, y + 0.5 - c);
+      if (cov <= 0) continue;
+      set(x, y, disc, Math.round(255 * Math.min(1, cov)));
     }
   }
   const glyphs = [...label].map((ch) => GLYPHS[ch]).filter(Boolean);
@@ -599,6 +602,26 @@ function trayIcon(high, low, total) {
   return img;
 }
 
+// Win32 hands the shell a fixed 128-char buffer for a tray tooltip (szTip), and a longer
+// string is cut off wherever it lands — mid-service, mid-count. Drop whole lines and say
+// how many, so the breakdown that survives is one you can trust. macOS has no such cap.
+const TOOLTIP_MAX = 127;
+
+function fitTooltip(lines) {
+  const all = lines.join('\n');
+  if (!WINDOWS || all.length <= TOOLTIP_MAX) return all;
+  const kept = [];
+  let len = 0;
+  for (const line of lines) {
+    const room = TOOLTIP_MAX - `\n+${lines.length - kept.length} more`.length;
+    if (len + line.length > room) break;
+    kept.push(line);
+    len += line.length + 1; // + the newline that will join it
+  }
+  if (!kept.length) return `${lines.length} services with unread messages`;
+  return `${kept.join('\n')}\n+${lines.length - kept.length} more`;
+}
+
 function updateTray() {
   if (!tray) return;
   const unreadServices = orderedServices().filter((s) => unread[s.id] > 0);
@@ -620,9 +643,11 @@ function updateTray() {
   if (WINDOWS) tray.setImage(trayIcon(high.length > 0, low.length > 0, totalUnread()));
   else tray.setTitle(title);
 
-  const detail = unreadServices.map((s) => `${s.name}: ${unread[s.id]} (${prio[s.id]})`).join('\n');
   // Named in the calm state: on Windows this tooltip is the only per-service breakdown
   // there is, hanging off an icon in a row of fifteen others.
+  const detail = fitTooltip(
+    unreadServices.map((s) => `${s.name}: ${unread[s.id]} (${prio[s.id]})`),
+  );
   tray.setToolTip(detail || 'Earshot — no new messages');
   if (app.dock) app.dock.setBadge(totalUnread() > 0 ? String(totalUnread()) : '');
 }
@@ -934,6 +959,13 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+  // The third delivery path, and the only one Windows has when the app was NOT already
+  // running: the URL sits in our own argv. `second-instance` cannot fire (we are the
+  // first instance) and there is no open-url event here, so without this a documented
+  // `start "" "earshot://open/gchat"` silently starts a hidden app and nothing else.
+  // Must come after createWindow, which is what makes views[id] exist to switch to.
+  const coldLink = process.argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
+  if (coldLink) handleDeepLink(coldLink);
   // After the views exist, so the very first file already carries every service id.
   writeState(true);
   stateTimer = setInterval(() => writeState(true), STATE_HEARTBEAT_MS);
