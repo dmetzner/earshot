@@ -753,7 +753,7 @@ function createServiceView(s) {
   wc.on('dom-ready', () => {
     wc.executeJavaScript(BADGE_HOOK_JS).catch(() => {});
   });
-  setInterval(async () => {
+  const poll = async () => {
     try {
       unreadBadge[s.id] = Number(await wc.executeJavaScript('window.__earshotBadge|0')) || 0;
       if (s.unreadJs) unreadDom[s.id] = Number(await wc.executeJavaScript(s.unreadJs)) || 0;
@@ -770,7 +770,15 @@ function createServiceView(s) {
         }
       }
     } catch {}
-  }, 4000);
+    // The poll is a BACKSTOP, not the mechanism: a count that moves announces itself
+    // through page-title-updated, which is event-driven and unaffected by any of this.
+    // What the poll adds is the Badging API global and the DOM extractors, and reading
+    // those every 4 s for eight services is most of the main process's share of the
+    // 11 % of a core Earshot burns while hidden. While the window is away it is read
+    // every 15 s instead — still twice as often as the state file is republished.
+    pollTimer[s.id] = setTimeout(poll, isAway() ? IDLE_POLL_MS : POLL_MS);
+  };
+  pollTimer[s.id] = setTimeout(poll, POLL_MS);
 
   wc.on('did-finish-load', () => {
     loadedAt[s.id] = Date.now();
@@ -831,12 +839,15 @@ const SWEEP_EVERY_MS = 24 * 60 * 60 * 1000;
 // window has to outlast that, and the price of overshooting is only a count that stays up
 // to 45 s stale on a view nobody is looking at.
 const RELOAD_GRACE_MS = 45000;
+const POLL_MS = 4000; // how often each view's badge global + DOM extractor is read
+const IDLE_POLL_MS = 15000; // ...and how often once the window has been put away
 
 let hiddenSince = Date.now();
 let lastSweep = 0;
 let maintainTimer = null;
 const loadedAt = {}; // id -> ms, when its document last finished loading
 const reloadingUntil = {}; // id -> ms, grace window of a reload we asked for
+const pollTimer = {}; // id -> the pending backstop poll, so a quit can cancel it
 
 async function sweepCaches() {
   for (const s of SERVICES) {
@@ -862,8 +873,13 @@ function recycleOldestView() {
   wc.reload();
 }
 
+// Put away: hidden, and hidden long enough that this is not just a glance elsewhere.
+function isAway() {
+  return !!win && !win.isVisible() && Date.now() - hiddenSince >= IDLE_MS;
+}
+
 function maintain() {
-  if (!win || win.isVisible() || Date.now() - hiddenSince < IDLE_MS) return;
+  if (!isAway()) return;
   if (Date.now() - lastSweep > SWEEP_EVERY_MS) {
     lastSweep = Date.now();
     sweepCaches();
@@ -1103,6 +1119,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   if (stateTimer) clearInterval(stateTimer);
   if (maintainTimer) clearInterval(maintainTimer);
+  for (const t of Object.values(pollTimer)) clearTimeout(t);
   try {
     fs.unlinkSync(statePath());
   } catch {}
