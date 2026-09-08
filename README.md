@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/dmetzner/earshot/actions/workflows/ci.yml/badge.svg)](https://github.com/dmetzner/earshot/actions/workflows/ci.yml)
 
-A macOS **menubar hub** for all your web chats — Google Chat, Gmail, Slack, WhatsApp, Discord, or any other web-based messenger. One window, one menubar icon, and an at-a-glance unread indicator that tells you **where** you have messages and **how urgent** they are.
+A **menubar / system-tray hub** for all your web chats — Google Chat, Gmail, Slack, WhatsApp, Discord, or any other web-based messenger. One window, one icon, and an at-a-glance unread indicator that tells you **where** you have messages and **how urgent** they are. macOS and Windows 11.
 
 > Built because WebKit-based wrappers (Unite, Coherence, etc.) can't log into Google — Google blocks embedded webviews. Earshot runs on Electron's bundled Chromium, so logins work exactly like Chrome.
 
@@ -10,9 +10,22 @@ A macOS **menubar hub** for all your web chats — Google Chat, Gmail, Slack, Wh
 
 The point isn't the window — it's the **menubar indicator**. You should always know, without clicking anything, whether you have new messages, in which app, and whether it's worth interrupting your work for.
 
+On **macOS** the indicator is menubar text:
+
 - **`💬`** — all clear
 - **`🔴 💬2 ✉5`** — high-priority unread (act now), shown in red with each app's icon + count
 - **`🔴 💬2 · 🟢3`** — high-priority plus low-priority (after the `·`, no red — you know, but it's not urgent)
+
+Windows has no menubar text to write into — `tray.setTitle` is a macOS-only API that
+silently does nothing there — so the same three facts are **painted into the tray icon**: a
+grey disc when all is clear, amber when only low-priority chats are waiting, red when
+something is high-priority, with the total drawn over it (`9+` past 99). Which app it is
+comes from the tooltip, which lists every service with an unread count.
+
+**One-time step on Windows 11:** new tray icons start life hidden behind the `^` overflow
+chevron, and Windows gives an app no way to promote itself out of it. An indicator you
+have to click twice to see is not an indicator, so pin it once — *Settings → Personalisation
+→ Taskbar → Other system tray icons → Earshot → On*, or just drag it out of the flyout.
 
 ## Features
 
@@ -31,7 +44,8 @@ The point isn't the window — it's the **menubar indicator**. You should always
 - **Scriptable from outside** — a heartbeat state file other tools can poll, and an
   `earshot://open/<id>` deep link that focuses a service. See
   [Integrating with other tools](#integrating-with-other-tools).
-- **Menubar-only** (no dock icon), **auto-starts at login**, single-instance.
+- **Indicator-only** (no dock icon on macOS, no taskbar button on Windows), **auto-starts at
+  login**, single-instance.
 
 ## Install / Build
 
@@ -39,10 +53,15 @@ Requires Node + npm.
 
 ```bash
 npm install
-./build.sh        # or: npm run build
+./build.sh        # macOS      — or: npm run build
+./build.ps1       # Windows 11 — or: npm run build:win
 ```
 
-This builds a self-contained **`/Applications/Earshot.app`** (the full Electron runtime copied in, rebranded, ad-hoc code-signed) and launches it. Re-run `./build.sh` after any source change — it's the one command you need.
+**macOS** builds a self-contained **`/Applications/Earshot.app`** (the full Electron runtime copied in, rebranded, ad-hoc code-signed) and launches it.
+
+**Windows** builds **`%LOCALAPPDATA%\Programs\Earshot`** the same way: the Electron runtime copied in with `electron.exe` renamed to `Earshot.exe`, which is what makes `app.isPackaged` true and so what turns on the login item and the `earshot://` registration. There is no signing step — the Windows counterpart of an ad-hoc signature would be a real Authenticode certificate, so the first launch may need SmartScreen's *More info → Run anyway*.
+
+Re-run the build script for your platform after any source change — it's the one command you need.
 
 Development (runs from source, prints logs to the terminal):
 
@@ -52,9 +71,9 @@ npm start
 
 ## Configuration
 
-Services are stored in `~/Library/Application Support/earshot/services.json`, seeded from `DEFAULT_SERVICES` in `main.js` on first run. Manage them via **right-click the menubar icon → Edit services…**:
+Services are stored in `services.json` inside Electron's userData directory — `~/Library/Application Support/earshot` on macOS, `%APPDATA%\earshot` on Windows — seeded from `DEFAULT_SERVICES` in `main.js` on first run. Manage them via **right-click the tray/menubar icon → Edit services…**:
 
-- **Icon** — an emoji shown in the menubar/sidebar
+- **Icon** — an emoji shown in the sidebar (and, on macOS, in the menubar)
 - **Name**, **URL**
 - **Priority** — High (red) or Low (quiet)
 - **Mode** — a free label, `private` or `work`. Earshot itself does nothing with it; it is
@@ -73,7 +92,7 @@ Most services report unread via the Badging API or their tab title and work auto
 Earshot is the live view, but it also publishes its state so a dashboard, status bar or
 script can show the same picture without logging into anything.
 
-**`~/Library/Application Support/earshot/unread.json`** — rewritten via tmp + rename (so a
+**`unread.json`**, beside `services.json` in the userData directory above — rewritten via tmp + rename (so a
 reader never observes a half-written file), and refreshed every 30 s **even when nothing
 changed**:
 
@@ -104,8 +123,14 @@ Escape them anyway before putting them in HTML.
 another app can link straight to the right tab:
 
 ```bash
-open "earshot://open/gchat"
+open "earshot://open/gchat"                  # macOS
+start "" "earshot://open/gchat"              # Windows
 ```
+
+A reader on Windows must open the file as **UTF-8** explicitly and hand the URL to
+`ShellExecute` (`os.startfile`, `start ""`) rather than building a command line: the state
+file carries each service's emoji, so the default cp1252 decode fails, and a URL with an
+`&` in it is re-parsed by `cmd`.
 
 There is deliberately **no url parameter**: any process on the machine can open a URL
 scheme, and "load this address in one of my logged-in sessions" is not a knob worth
@@ -120,7 +145,8 @@ handing out. Only ids that match a service you configured are accepted.
 | `sidebar.html` | the service sidebar (icons, badges, drag-reorder) |
 | `service-preload.js` | hooks the Badging API inside each service page |
 | `settings.html` / `settings-preload.js` | the Edit-services config UI |
-| `build.sh` | builds + signs the standalone `.app` |
+| `build.sh` | builds + signs the standalone macOS `.app` |
+| `build.ps1` | the Windows twin — builds `%LOCALAPPDATA%\Programs\Earshot` |
 
 ## Lint / format
 

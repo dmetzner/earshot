@@ -329,8 +329,9 @@ function togglePrio(id) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // A second launch is how macOS delivers an `earshot://` link to the running instance
-  // when the app was already up; argv carries it. `open-url` covers the other path.
+  // A second launch is how an `earshot://` link reaches the running instance; argv
+  // carries it. That is one of two paths on macOS (`open-url` below is the other) and
+  // the ONLY one on Windows, which has no open-url event at all.
   app.on('second-instance', (_e, argv) => {
     const link = argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
     if (link) handleDeepLink(link);
@@ -501,6 +502,103 @@ function sendState() {
   });
 }
 
+// ---- the indicator ---------------------------------------------------------
+// On macOS the whole indicator is menubar TEXT: an empty image plus `tray.setTitle()`,
+// which is why the Tray below is built from nativeImage.createEmpty(). Neither half of
+// that survives the trip to Windows. `setTitle` still exists on the object there — it is
+// a macOS-only API that silently does nothing — and a tray built from an empty image is
+// a slot in the notification area with nothing in it: invisible, so the counts are gone
+// AND so is the only way left to open the window. The three facts the title carried
+// (something / urgent / how many) therefore have to be painted.
+const WINDOWS = process.platform === 'win32';
+
+// 5×7 pixel digits. A tray image has no text API, and a font would be a dependency and a
+// licence for eleven glyphs, so the count is drawn a pixel at a time: seven rows of five,
+// `1` = ink. 5×7 rather than the obvious 3×5 because the icon is SIXTEEN pixels — at 3×5
+// the digit is a third of its height and reads as a smudge; two of these fill it. `+` is
+// the overflow mark, and only past 99 does the exact number stop being the point.
+const GLYPH_W = 5;
+const GLYPH_H = 7;
+const GLYPHS = {
+  0: '11111100011000110001100011000111111',
+  1: '00100011000010000100001000010001110',
+  2: '11111000010000111111100001000011111',
+  3: '11111000010000111111000010000111111',
+  4: '10001100011000111111000010000100001',
+  5: '11111100001000011111000010000111111',
+  6: '11111100001000011111100011000111111',
+  7: '11111000010001000100010000100001000',
+  8: '11111100011000111111100011000111111',
+  9: '11111100011000111111000010000111111',
+  '+': '00000001000010011111001000010000000',
+};
+
+// BGRA — the byte order nativeImage.createFromBitmap reads. Verified against a PNG
+// round-trip rather than assumed: RGBA here gives a blue alert and a red all-clear.
+const DISC_HIGH = [0x4d, 0x48, 0xe5]; // red — act now
+const DISC_LOW = [0x23, 0xa6, 0xf5]; // amber — you know, and it can wait
+const DISC_CALM = [0x81, 0x76, 0x6e]; // grey — nothing unread, but still there to click
+
+function paintTray(scale, disc, label) {
+  const size = 16 * scale;
+  const px = Buffer.alloc(size * size * 4);
+  const set = (x, y, [b, g, r], a) => {
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    const o = (y * size + x) * 4;
+    px[o] = b;
+    px[o + 1] = g;
+    px[o + 2] = r;
+    px[o + 3] = a;
+  };
+  // Filled disc with a one-pixel alpha ramp at the rim: a hard-edged circle reads as a
+  // rendering fault at 16 px beside the system's own icons.
+  const c = size / 2;
+  const rad = c - 0.5 * scale;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const d = Math.hypot(x + 0.5 - c, y + 0.5 - c);
+      if (d > rad) continue;
+      set(x, y, disc, Math.round(255 * Math.min(1, rad - d + 1)));
+    }
+  }
+  const glyphs = [...label].map((ch) => GLYPHS[ch]).filter(Boolean);
+  if (!glyphs.length) return px;
+  // Two glyphs plus a one-pixel gap is 11 of the 16, and its corners still fall inside
+  // the disc — that is what caps the label at two characters rather than a taste call.
+  const w = GLYPH_W * scale;
+  const x0 = Math.round((size - (glyphs.length * w + (glyphs.length - 1) * scale)) / 2);
+  const y0 = Math.round((size - GLYPH_H * scale) / 2);
+  glyphs.forEach((bits, i) => {
+    for (let row = 0; row < GLYPH_H; row++) {
+      for (let col = 0; col < GLYPH_W; col++) {
+        if (bits[row * GLYPH_W + col] !== '1') continue;
+        for (let dy = 0; dy < scale; dy++) {
+          for (let dx = 0; dx < scale; dx++) {
+            const x = x0 + i * (w + scale) + col * scale + dx;
+            set(x, y0 + row * scale + dy, [255, 255, 255], 255);
+          }
+        }
+      }
+    }
+  });
+  return px;
+}
+
+// Both scale factors, because Windows picks one per monitor: a 16 px bitmap stretched
+// onto a 200 % display is a smear, and 7-pixel-tall digits do not survive being smeared.
+function trayIcon(high, low, total) {
+  const disc = high ? DISC_HIGH : low ? DISC_LOW : DISC_CALM;
+  const label = total <= 0 ? '' : total > 99 ? '9+' : String(total);
+  const img = nativeImage.createFromBitmap(paintTray(1, disc, label), { width: 16, height: 16 });
+  img.addRepresentation({
+    scaleFactor: 2,
+    width: 32,
+    height: 32,
+    buffer: paintTray(2, disc, label),
+  });
+  return img;
+}
+
 function updateTray() {
   if (!tray) return;
   const unreadServices = orderedServices().filter((s) => unread[s.id] > 0);
@@ -519,10 +617,13 @@ function updateTray() {
     if (low.length) parts.push(`${high.length ? '· ' : ''}${fmt(low)}`);
     title = parts.join('  ');
   }
-  tray.setTitle(title);
+  if (WINDOWS) tray.setImage(trayIcon(high.length > 0, low.length > 0, totalUnread()));
+  else tray.setTitle(title);
 
   const detail = unreadServices.map((s) => `${s.name}: ${unread[s.id]} (${prio[s.id]})`).join('\n');
-  tray.setToolTip(detail || 'No new messages');
+  // Named in the calm state: on Windows this tooltip is the only per-service breakdown
+  // there is, hanging off an icon in a row of fifteen others.
+  tray.setToolTip(detail || 'Earshot — no new messages');
   if (app.dock) app.dock.setBadge(totalUnread() > 0 ? String(totalUnread()) : '');
 }
 
@@ -769,6 +870,13 @@ ipcMain.on('home', (event) => {
 // Must be called before the app is ready.
 app.disableHardwareAcceleration();
 
+// Windows identifies an app by its AppUserModelID, and Electron's default is
+// `electron.app.Electron` — which is the name that then shows up in Task Manager's
+// Startup tab for the login item, and the identity notifications are attributed to. An
+// entry nobody can recognise is one that gets disabled. Same id as build.sh writes into
+// CFBundleIdentifier, so the two platforms agree on what this app is called.
+if (WINDOWS) app.setAppUserModelId('uk.metzner.earshot');
+
 app.whenReady().then(() => {
   if (app.dock) app.dock.hide();
   loadServices();
@@ -778,9 +886,18 @@ app.whenReady().then(() => {
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
   // `earshot://open/<id>` — registered at runtime so a dev run (`npm start`) answers it
   // too, not only the packaged app.
-  app.setAsDefaultProtocolClient('earshot');
+  if (WINDOWS && !app.isPackaged) {
+    // Windows registers a COMMAND LINE, not a bundle id, so the plain call writes
+    // `electron.exe "%1"` — which starts Electron with no app in it. A dev run has to
+    // name the source directory itself or the link opens an empty grey window.
+    app.setAsDefaultProtocolClient('earshot', process.execPath, [path.resolve(__dirname)]);
+  } else {
+    app.setAsDefaultProtocolClient('earshot');
+  }
 
-  tray = new Tray(nativeImage.createEmpty());
+  // Empty is the whole widget on macOS (the title is the indicator); everywhere else an
+  // empty tray image is an invisible icon. See trayIcon above.
+  tray = new Tray(WINDOWS ? trayIcon(false, false, 0) : nativeImage.createEmpty());
   updateTray(); // sets title + tooltip
   tray.on('click', toggleWindow);
   tray.on('right-click', () => {
