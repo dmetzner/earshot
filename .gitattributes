@@ -1,0 +1,14 @@
+# LF in the worktree on every platform, not just in the index.
+#
+# Git for Windows defaults to core.autocrlf=true, so a Windows checkout of this repo
+# arrives with CRLF — and Biome's formatter, which has no line-ending option enabled here,
+# then reports all eight source files as unformatted. `npm run lint` is red on Windows for
+# a reason that has nothing to do with the code, while CI (ubuntu, LF) stays green: a gate
+# that cries wolf on a whole checkout is one nobody reads.
+#
+# .editorconfig already says end_of_line = lf; this is the half that git enforces.
+* text=auto eol=lf
+
+# Binary, so git must not touch it at all.
+*.png binary
+*.ico binary

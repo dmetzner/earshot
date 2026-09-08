@@ -2,7 +2,7 @@
   "name": "earshot",
   "version": "1.0.0",
   "private": true,
-  "description": "Stay within earshot of every chat — a macOS menubar hub for Google Chat, Gmail, Slack, WhatsApp, Discord and any web chat, with per-service priority and unread counts.",
+  "description": "Stay within earshot of every chat — a menubar/tray hub for Google Chat, Gmail, Slack, WhatsApp, Discord and any web chat, with per-service priority and unread counts. macOS and Windows.",
   "author": "Daniel Metzner",
   "license": "MIT",
   "repository": {
@@ -16,6 +16,7 @@
   "scripts": {
     "start": "electron .",
     "build": "./build.sh",
+    "build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./build.ps1",
     "lint": "biome check .",
     "format": "biome check --write ."
   },

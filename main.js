@@ -7,6 +7,7 @@ const {
   nativeImage,
   shell,
   ipcMain,
+  session,
 } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -329,8 +330,10 @@ function togglePrio(id) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // A second launch is how macOS delivers an `earshot://` link to the running instance
-  // when the app was already up; argv carries it. `open-url` covers the other path.
+  // A second launch is how an `earshot://` link reaches the ALREADY-RUNNING instance;
+  // argv carries it. That is one of two paths on macOS (`open-url` below is the other)
+  // and the only such path on Windows, which has no open-url event at all — a link that
+  // starts the app cold is picked out of our own argv in whenReady instead.
   app.on('second-instance', (_e, argv) => {
     const link = argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
     if (link) handleDeepLink(link);
@@ -501,6 +504,163 @@ function sendState() {
   });
 }
 
+// ---- the indicator ---------------------------------------------------------
+// On macOS the whole indicator is menubar TEXT: an empty image plus `tray.setTitle()`,
+// which is why the Tray below is built from nativeImage.createEmpty(). Neither half of
+// that survives the trip to Windows. `setTitle` still exists on the object there — it is
+// a macOS-only API that silently does nothing — and a tray built from an empty image is
+// a slot in the notification area with nothing in it: invisible, so the counts are gone
+// AND so is the only way left to open the window. The three facts the title carried
+// (something / urgent / how many) therefore have to be painted.
+const WINDOWS = process.platform === 'win32';
+
+// 5×7 pixel digits, drawn at whatever size the display asks for (see runs()). A tray
+// image has no text API, and a font would be a dependency and a licence for eleven
+// glyphs, so the count is drawn a pixel at a time: seven rows of five, `1` = ink. 5×7
+// rather than the obvious 3×5 because the icon is SIXTEEN logical pixels — at 3×5 the
+// digit is a third of its height and reads as a smudge; two of these fill it. `+` is the
+// overflow mark, and only past 99 does the exact number stop being the point.
+const GLYPH_W = 5;
+const GLYPH_H = 7;
+const GLYPHS = {
+  0: '11111100011000110001100011000111111',
+  1: '00100011000010000100001000010001110',
+  2: '11111000010000111111100001000011111',
+  3: '11111000010000111111000010000111111',
+  4: '10001100011000111111000010000100001',
+  5: '11111100001000011111000010000111111',
+  6: '11111100001000011111100011000111111',
+  7: '11111000010001000100010000100001000',
+  8: '11111100011000111111100011000111111',
+  9: '11111100011000111111000010000111111',
+  '+': '00000001000010011111001000010000000',
+};
+
+// BGRA — the byte order nativeImage.createFromBitmap reads. Verified against a PNG
+// round-trip rather than assumed: RGBA here gives a blue alert and a red all-clear.
+const DISC_HIGH = [0x4d, 0x48, 0xe5]; // red — act now
+const DISC_LOW = [0x23, 0xa6, 0xf5]; // amber — you know, and it can wait
+const DISC_CALM = [0x81, 0x76, 0x6e]; // grey — nothing unread, but still there to click
+
+// How many device pixels each of `n` source cells gets when the block is `dest` pixels
+// wide, by cumulative rounding — which is the part that matters: 5 columns over 8 pixels
+// comes out 2,1,2,1,2, SYMMETRIC, where nearest-neighbour sampling gives 2,2,1,2,1 and a
+// digit whose left edge is fatter than its right reads as a rendering fault. Integer
+// scales fall out of the same formula unchanged (5 over 10 is 2,2,2,2,2).
+function runs(n, dest) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(Math.round(((i + 1) * dest) / n) - Math.round((i * dest) / n));
+  }
+  return out;
+}
+
+const INK = [255, 255, 255];
+
+// `size` is device pixels, not a scale factor: Windows asks for 16 at 100 %, 24 at 150 %
+// and 32 at 200 %, and 24 is not a whole multiple of anything.
+function paintTray(size, disc, label) {
+  const buf = Buffer.alloc(size * size * 4);
+  const set = (x, y, [b, g, r], a) => {
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    const o = (y * size + x) * 4;
+    buf[o] = b;
+    buf[o + 1] = g;
+    buf[o + 2] = r;
+    buf[o + 3] = a;
+  };
+  // Filled disc with a one-pixel alpha ramp at the rim: a hard-edged circle reads as a
+  // rendering fault at 16 px beside the system's own icons. So the test is coverage, not
+  // membership — `rad - d` is how far inside the rim the pixel centre falls, clamped to
+  // one DEVICE pixel of ramp at any size.
+  const c = size / 2;
+  const rad = c - size / 32;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const cov = rad - Math.hypot(x + 0.5 - c, y + 0.5 - c);
+      if (cov <= 0) continue;
+      set(x, y, disc, Math.round(255 * Math.min(1, cov)));
+    }
+  }
+  const glyphs = [...label].map((ch) => GLYPHS[ch]).filter(Boolean);
+  if (!glyphs.length) return buf;
+  // Two glyphs plus a one-pixel gap is 11 of the 16, and its corners still fall inside
+  // the disc — that is what caps the label at two characters rather than a taste call.
+  const gw = Math.round((GLYPH_W * size) / 16);
+  const gh = Math.round((GLYPH_H * size) / 16);
+  const gap = Math.max(1, Math.round(size / 16));
+  const cols = runs(GLYPH_W, gw);
+  const rows = runs(GLYPH_H, gh);
+  const x0 = Math.round((size - (glyphs.length * gw + (glyphs.length - 1) * gap)) / 2);
+  const y0 = Math.round((size - gh) / 2);
+  glyphs.forEach((bits, i) => {
+    let cy = y0;
+    for (let row = 0; row < GLYPH_H; row++) {
+      let cx = x0 + i * (gw + gap);
+      for (let col = 0; col < GLYPH_W; col++) {
+        if (bits[row * GLYPH_W + col] === '1') {
+          for (let dy = 0; dy < rows[row]; dy++) {
+            for (let dx = 0; dx < cols[col]; dx++) set(cx + dx, cy + dy, INK, 255);
+          }
+        }
+        cx += cols[col];
+      }
+      cy += rows[row];
+    }
+  });
+  return buf;
+}
+
+// Every scale factor Windows actually hands out, because it picks one per MONITOR and
+// rescales whatever it finds: with only 16 and 32 in the image, a 150 % display — the
+// stock setting on every Windows laptop — resamples 32 down to 24 and 7-pixel-tall
+// digits do not survive that. macOS never sees any of this; the title is the indicator
+// there.
+const TRAY_SIZES = [
+  [1, 16],
+  [1.5, 24],
+  [2, 32],
+];
+
+function trayIcon(high, low, total) {
+  const disc = high ? DISC_HIGH : low ? DISC_LOW : DISC_CALM;
+  const label = total <= 0 ? '' : total > 99 ? '9+' : String(total);
+  const [, base] = TRAY_SIZES[0];
+  const img = nativeImage.createFromBitmap(paintTray(base, disc, label), {
+    width: base,
+    height: base,
+  });
+  for (const [scaleFactor, size] of TRAY_SIZES.slice(1)) {
+    img.addRepresentation({
+      scaleFactor,
+      width: size,
+      height: size,
+      buffer: paintTray(size, disc, label),
+    });
+  }
+  return img;
+}
+
+// Win32 hands the shell a fixed 128-char buffer for a tray tooltip (szTip), and a longer
+// string is cut off wherever it lands — mid-service, mid-count. Drop whole lines and say
+// how many, so the breakdown that survives is one you can trust. macOS has no such cap.
+const TOOLTIP_MAX = 127;
+
+function fitTooltip(lines) {
+  const all = lines.join('\n');
+  if (!WINDOWS || all.length <= TOOLTIP_MAX) return all;
+  const kept = [];
+  let len = 0;
+  for (const line of lines) {
+    const room = TOOLTIP_MAX - `\n+${lines.length - kept.length} more`.length;
+    if (len + line.length > room) break;
+    kept.push(line);
+    len += line.length + 1; // + the newline that will join it
+  }
+  if (!kept.length) return `${lines.length} services with unread messages`;
+  return `${kept.join('\n')}\n+${lines.length - kept.length} more`;
+}
+
 function updateTray() {
   if (!tray) return;
   const unreadServices = orderedServices().filter((s) => unread[s.id] > 0);
@@ -519,10 +679,15 @@ function updateTray() {
     if (low.length) parts.push(`${high.length ? '· ' : ''}${fmt(low)}`);
     title = parts.join('  ');
   }
-  tray.setTitle(title);
+  if (WINDOWS) tray.setImage(trayIcon(high.length > 0, low.length > 0, totalUnread()));
+  else tray.setTitle(title);
 
-  const detail = unreadServices.map((s) => `${s.name}: ${unread[s.id]} (${prio[s.id]})`).join('\n');
-  tray.setToolTip(detail || 'No new messages');
+  // Named in the calm state: on Windows this tooltip is the only per-service breakdown
+  // there is, hanging off an icon in a row of fifteen others.
+  const detail = fitTooltip(
+    unreadServices.map((s) => `${s.name}: ${unread[s.id]} (${prio[s.id]})`),
+  );
+  tray.setToolTip(detail || 'Earshot — no new messages');
   if (app.dock) app.dock.setBadge(totalUnread() > 0 ? String(totalUnread()) : '');
 }
 
@@ -533,7 +698,13 @@ function isLoginHost(host) {
 }
 
 function recompute(id) {
-  unread[id] = Math.max(unreadTitle[id] || 0, unreadBadge[id] || 0, unreadDom[id] || 0);
+  const next = Math.max(unreadTitle[id] || 0, unreadBadge[id] || 0, unreadDom[id] || 0);
+  // A view we recycled reports nothing for the second or two between load and first
+  // paint, and a false all-clear is the single worst thing this app can show — it is
+  // believed, and it is shown exactly while you are away. So a drop to zero inside a
+  // reload we started is held back; the page reports the real count moments later.
+  if (next === 0 && Date.now() < (reloadingUntil[id] || 0)) return;
+  unread[id] = next;
   updateTray();
   sendState();
   writeState();
@@ -582,7 +753,7 @@ function createServiceView(s) {
   wc.on('dom-ready', () => {
     wc.executeJavaScript(BADGE_HOOK_JS).catch(() => {});
   });
-  setInterval(async () => {
+  const poll = async () => {
     try {
       unreadBadge[s.id] = Number(await wc.executeJavaScript('window.__earshotBadge|0')) || 0;
       if (s.unreadJs) unreadDom[s.id] = Number(await wc.executeJavaScript(s.unreadJs)) || 0;
@@ -599,7 +770,19 @@ function createServiceView(s) {
         }
       }
     } catch {}
-  }, 4000);
+    // The poll is a BACKSTOP, not the mechanism: a count that moves announces itself
+    // through page-title-updated, which is event-driven and unaffected by any of this.
+    // What the poll adds is the Badging API global and the DOM extractors, and reading
+    // those every 4 s for eight services is most of the main process's share of the
+    // 11 % of a core Earshot burns while hidden. While the window is away it is read
+    // every 15 s instead — still twice as often as the state file is republished.
+    pollTimer[s.id] = setTimeout(poll, isAway() ? IDLE_POLL_MS : POLL_MS);
+  };
+  pollTimer[s.id] = setTimeout(poll, POLL_MS);
+
+  wc.on('did-finish-load', () => {
+    loadedAt[s.id] = Date.now();
+  });
 
   wc.on('page-favicon-updated', (_e, favs) => {
     if (favs?.[0]) {
@@ -627,9 +810,81 @@ function createServiceView(s) {
   });
 
   views[s.id] = view;
+  loadedAt[s.id] = Date.now();
   unread[s.id] = 0;
   unreadTitle[s.id] = 0;
   unreadBadge[s.id] = 0;
+}
+
+// ---- keeping a long-lived hub small ---------------------------------------
+// Eight chat SPAs in eight renderers is what Earshot costs, and none of them were built
+// to run for a fortnight. Measured six hours after a cold start: the five heavy views at
+// 350-650 MB each, 4.0 GB total RSS, and a userData directory of 1.5 GB — 840 MB of that
+// HTTP cache, 145 MB compiled-code cache. Both are recoverable, and neither is worth a
+// button (housekeeping you have to remember is housekeeping that never happens), so they
+// are recovered while the window is put away: the caches emptied once a day, and one view
+// at a time reloaded, which is the only thing that actually returns a renderer to its
+// load-time footprint. Counts survive both — they are re-derived from the page every 4 s.
+//
+// What the reload half costs: text typed into a service and never sent is gone. So the
+// view you last had open is exempt (it holds the draft you are most likely to have), a
+// view is only recycled once it has been up for hours, and nothing happens at all until
+// the window has been away for half an hour.
+const IDLE_MS = 30 * 60 * 1000;
+const MAINTAIN_TICK_MS = 5 * 60 * 1000;
+const RECYCLE_AFTER_MS = 6 * 60 * 60 * 1000;
+const SWEEP_EVERY_MS = 24 * 60 * 60 * 1000;
+// How long a recycled view's last count is trusted over a zero. A document that finished
+// loading has not finished BOOTING — a chat SPA paints its badges seconds later — so the
+// window has to outlast that, and the price of overshooting is only a count that stays up
+// to 45 s stale on a view nobody is looking at.
+const RELOAD_GRACE_MS = 45000;
+const POLL_MS = 4000; // how often each view's badge global + DOM extractor is read
+const IDLE_POLL_MS = 15000; // ...and how often once the window has been put away
+
+let hiddenSince = Date.now();
+let lastSweep = 0;
+let maintainTimer = null;
+const loadedAt = {}; // id -> ms, when its document last finished loading
+const reloadingUntil = {}; // id -> ms, grace window of a reload we asked for
+const pollTimer = {}; // id -> the pending backstop poll, so a quit can cancel it
+
+async function sweepCaches() {
+  for (const s of SERVICES) {
+    const ses = session.fromPartition(`persist:${s.id}`);
+    // The two caches and nothing else: clearStorageData would take the cookies, the
+    // IndexedDB and the service workers with it — the logins, and the apps' own stores.
+    try {
+      await ses.clearCache();
+      await ses.clearCodeCaches({ urls: [] });
+    } catch {}
+  }
+}
+
+function recycleOldestView() {
+  const now = Date.now();
+  const next = SERVICES.filter((s) => s.id !== activeId)
+    .filter((s) => now - (loadedAt[s.id] || now) > RECYCLE_AFTER_MS)
+    .sort((a, b) => (loadedAt[a.id] || 0) - (loadedAt[b.id] || 0))[0];
+  const wc = next && views[next.id]?.webContents;
+  if (!wc || wc.isDestroyed() || wc.isLoading()) return;
+  loadedAt[next.id] = now; // claim it before reloading: a load that never finishes must
+  reloadingUntil[next.id] = now + RELOAD_GRACE_MS; // not have the next tick pick it again
+  wc.reload();
+}
+
+// Put away: hidden, and hidden long enough that this is not just a glance elsewhere.
+function isAway() {
+  return !!win && !win.isVisible() && Date.now() - hiddenSince >= IDLE_MS;
+}
+
+function maintain() {
+  if (!isAway()) return;
+  if (Date.now() - lastSweep > SWEEP_EVERY_MS) {
+    lastSweep = Date.now();
+    sweepCaches();
+  }
+  recycleOldestView(); // one per tick — eight at once is a stampede, not maintenance
 }
 
 function layout() {
@@ -704,6 +959,9 @@ function createWindow() {
 
   sidebar.webContents.on('did-finish-load', sendState);
   win.on('resize', layout);
+  win.on('hide', () => {
+    hiddenSince = Date.now();
+  });
   win.on('close', (e) => {
     if (!app.isQuitting) {
       e.preventDefault();
@@ -769,6 +1027,29 @@ ipcMain.on('home', (event) => {
 // Must be called before the app is ready.
 app.disableHardwareAcceleration();
 
+// Chromium sizes each partition's HTTP cache off free disk space, and eight partitions
+// each helping themselves is how the userData directory reached 1.5 GB. A chat app's
+// hot assets are a few MB; the rest of a 300 MB cache is history nobody reads.
+app.commandLine.appendSwitch('disk-cache-size', String(48 * 1024 * 1024));
+
+// The window's close handler hides instead of closing — that is what makes Earshot a
+// menubar app, and it is also what hung every macOS logout, restart and shutdown: the
+// OS asked politely, the window refused to go, and force-quit was the only way out.
+// `app.isQuitting` was set in exactly one place, the tray's Quit item. `before-quit` is
+// the one hook that fires for ALL of them (Apple-event quit, ⌘Q, OS shutdown), so it is
+// where the flag belongs. Verified against `osascript -e 'tell application ... to quit'`,
+// which is the same path a logout takes.
+app.on('before-quit', () => {
+  app.isQuitting = true;
+});
+
+// Windows identifies an app by its AppUserModelID, and Electron's default is
+// `electron.app.Electron` — which is the name that then shows up in Task Manager's
+// Startup tab for the login item, and the identity notifications are attributed to. An
+// entry nobody can recognise is one that gets disabled. Same id as build.sh writes into
+// CFBundleIdentifier, so the two platforms agree on what this app is called.
+if (WINDOWS) app.setAppUserModelId('uk.metzner.earshot');
+
 app.whenReady().then(() => {
   if (app.dock) app.dock.hide();
   loadServices();
@@ -778,9 +1059,18 @@ app.whenReady().then(() => {
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
   // `earshot://open/<id>` — registered at runtime so a dev run (`npm start`) answers it
   // too, not only the packaged app.
-  app.setAsDefaultProtocolClient('earshot');
+  if (WINDOWS && !app.isPackaged) {
+    // Windows registers a COMMAND LINE, not a bundle id, so the plain call writes
+    // `electron.exe "%1"` — which starts Electron with no app in it. A dev run has to
+    // name the source directory itself or the link opens an empty grey window.
+    app.setAsDefaultProtocolClient('earshot', process.execPath, [path.resolve(__dirname)]);
+  } else {
+    app.setAsDefaultProtocolClient('earshot');
+  }
 
-  tray = new Tray(nativeImage.createEmpty());
+  // Empty is the whole widget on macOS (the title is the indicator); everywhere else an
+  // empty tray image is an invisible icon. See trayIcon above.
+  tray = new Tray(WINDOWS ? trayIcon(false, false, 0) : nativeImage.createEmpty());
   updateTray(); // sets title + tooltip
   tray.on('click', toggleWindow);
   tray.on('right-click', () => {
@@ -805,27 +1095,31 @@ app.whenReady().then(() => {
       { type: 'separator' },
       { label: 'Edit services…', click: openSettings },
       { label: 'Reload current', click: () => views[activeId]?.webContents.reload() },
-      {
-        label: 'Quit',
-        click: () => {
-          app.isQuitting = true;
-          app.quit();
-        },
-      },
+      { label: 'Quit', click: () => app.quit() }, // before-quit sets the flag
     ]);
     tray.popUpContextMenu(menu);
   });
 
   createWindow();
+  // The third delivery path, and the only one Windows has when the app was NOT already
+  // running: the URL sits in our own argv. `second-instance` cannot fire (we are the
+  // first instance) and there is no open-url event here, so without this a documented
+  // `start "" "earshot://open/gchat"` silently starts a hidden app and nothing else.
+  // Must come after createWindow, which is what makes views[id] exist to switch to.
+  const coldLink = process.argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
+  if (coldLink) handleDeepLink(coldLink);
   // After the views exist, so the very first file already carries every service id.
   writeState(true);
   stateTimer = setInterval(() => writeState(true), STATE_HEARTBEAT_MS);
+  maintainTimer = setInterval(maintain, MAINTAIN_TICK_MS);
 });
 
 // A stale unread.json is how a reader knows earshot is gone; make that immediate on a
 // clean quit instead of waiting for the heartbeat to age out.
 app.on('will-quit', () => {
   if (stateTimer) clearInterval(stateTimer);
+  if (maintainTimer) clearInterval(maintainTimer);
+  for (const t of Object.values(pollTimer)) clearTimeout(t);
   try {
     fs.unlinkSync(statePath());
   } catch {}
