@@ -50,13 +50,18 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
 
 ## Install / Build
 
-Requires Node + npm.
+Requires Node 22.12+ and npm — the build runs Electron's own installer, which asks for that
+version.
 
 ```bash
-npm install
+npm ci
 ./build.sh        # macOS      — or: npm run build
 ./build.ps1       # Windows 11 — or: npm run build:win
 ```
+
+`npm ci` rather than `npm install`: the build refuses to run when `node_modules` holds a
+different Electron from the one the lockfile pins, and `npm ci` installs exactly the lockfile
+and prunes everything else, so that check cannot be tripped by leftovers.
 
 **macOS** builds a self-contained **`/Applications/Earshot.app`** (the full Electron runtime copied in, rebranded, ad-hoc code-signed) and launches it.
 
