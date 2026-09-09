@@ -12,12 +12,49 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - name: Install deps
         run: npm ci
         env:
-          # No need to download the ~100 MB Electron binary just to lint.
+          # Does nothing today, in two senses: electron 44.2.0 ships no install script for
+          # `npm ci` to run, and its install.js does not read this variable at all. Kept as
+          # a zero-cost hedge only — it would help a future version that re-adds BOTH a
+          # postinstall and the env check, which matters because dependabot groups electron
+          # with the other dev dependencies and dependabot-auto-merge.yml lands those
+          # unattended on green. A version that re-adds only the postinstall would download
+          # regardless; catching that needs a real check, not this.
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
       - name: Biome (lint + format check)
         run: npx biome ci .
+
+  # The build scripts carry most of this repo's failure-path logic and nothing above so much
+  # as parses them, so a syntax error in either would merge green — the dependabot
+  # auto-merge chain makes that a real path, not a hypothetical one. build.sh gets a syntax
+  # AND a lint gate; build.ps1 gets syntax only, since PSScriptAnalyzer is not on the runner.
+  # Neither script can be RUN in CI: each installs a desktop app.
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: bash syntax
+        run: bash -n build.sh
+      - name: shellcheck
+        run: shellcheck build.sh
+
+  build-ps1:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Windows PowerShell 5.1, not the runner's pwsh 7, because 5.1 is what runs this
+      # script: `npm run build:win` invokes powershell.exe. pwsh parses a superset — a
+      # ternary, ??, or a && pipeline chain would sail through a pwsh gate and then die at
+      # parse time on every real build, unattended-merged by dependabot on the way.
+      - name: PowerShell syntax
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./build.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          'build.ps1 parses'
