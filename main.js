@@ -427,8 +427,6 @@ function statePath() {
   return path.join(app.getPath('userData'), 'unread.json');
 }
 const STATE_HEARTBEAT_MS = 30000;
-const STATE_MIN_INTERVAL_MS = 1000; // recompute fires per title event; don't churn the disk
-let stateWrittenAt = 0;
 let stateTimer = null;
 
 // Senders come out of an untrusted page (see the *_SENDERS_JS constants) and end up in a
@@ -445,12 +443,11 @@ function sanitizeSenders(list) {
     .slice(0, 5);
 }
 
-function writeState(force) {
-  const now = Date.now();
-  if (!force && now - stateWrittenAt < STATE_MIN_INTERVAL_MS) return;
-  stateWrittenAt = now;
+// No throttle: recompute only calls this when a count actually changed, and a throttled
+// change used to sit unpublished until the next 30 s heartbeat.
+function writeState() {
   const payload = {
-    at: new Date(now).toISOString(),
+    at: new Date().toISOString(),
     total: totalUnread(),
     services: orderedServices()
       .filter(Boolean)
@@ -704,6 +701,10 @@ function recompute(id) {
   // believed, and it is shown exactly while you are away. So a drop to zero inside a
   // reload we started is held back; the page reports the real count moments later.
   if (next === 0 && Date.now() < (reloadingUntil[id] || 0)) return;
+  // Every view's poll lands here every few seconds and the count almost never moved.
+  // Repainting the tray (three bitmaps + a shell redraw on Windows), messaging the sidebar
+  // and rewriting the state file for an unchanged number was the bulk of the idle cost.
+  if (next === unread[id]) return;
   unread[id] = next;
   updateTray();
   sendState();
@@ -766,7 +767,7 @@ function createServiceView(s) {
           unread[s.id] > 0 ? sanitizeSenders(await wc.executeJavaScript(s.sendersJs)) : [];
         if (JSON.stringify(next) !== JSON.stringify(senders[s.id] || [])) {
           senders[s.id] = next;
-          writeState(true); // a changed sender list is news even when the count didn't move
+          writeState(); // a changed sender list is news even when the count didn't move
         }
       }
     } catch {}
@@ -1109,8 +1110,8 @@ app.whenReady().then(() => {
   const coldLink = process.argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
   if (coldLink) handleDeepLink(coldLink);
   // After the views exist, so the very first file already carries every service id.
-  writeState(true);
-  stateTimer = setInterval(() => writeState(true), STATE_HEARTBEAT_MS);
+  writeState();
+  stateTimer = setInterval(() => writeState(), STATE_HEARTBEAT_MS);
   maintainTimer = setInterval(maintain, MAINTAIN_TICK_MS);
 });
 
