@@ -853,11 +853,14 @@ const pollTimer = {}; // id -> the pending backstop poll, so a quit can cancel i
 async function sweepCaches() {
   for (const s of SERVICES) {
     const ses = session.fromPartition(`persist:${s.id}`);
-    // The two caches and nothing else: clearStorageData would take the cookies, the
+    // The caches and nothing else: a bare clearStorageData would take the cookies, the
     // IndexedDB and the service workers with it — the logins, and the apps' own stores.
+    // CacheStorage is only the service workers' asset copies, and Slack's grew to 721 MB
+    // of old bundles (2026-10-07); a worker re-fetches what it still needs.
     try {
       await ses.clearCache();
       await ses.clearCodeCaches({ urls: [] });
+      await ses.clearStorageData({ storages: ['cachestorage'] });
     } catch {}
   }
 }
