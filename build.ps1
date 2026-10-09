@@ -61,7 +61,8 @@ if ($lockVer -and $lockVer -ne $srcVer) {
   throw ("node_modules has Electron $srcVer; the lockfile pins $lockVer. Run 'npm ci' first " +
          '-- building now would install a runtime this repo does not declare.')
 }
-# The Electron package ships no postinstall script (electron 44.2.0), so `npm install` puts
+# The Electron package ships no postinstall script (verify: `scripts` in
+# node_modules\electron\package.json is absent), so `npm install` puts
 # its JS in node_modules\electron and never fetches the runtime at all —
 # running `node install.js` is the supported way to get dist\, not a workaround. Check BEFORE
 # the branch below, which starts by deleting the existing install: discovering the runtime is
