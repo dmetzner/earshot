@@ -17,7 +17,7 @@ jobs:
       - name: Install deps
         run: npm ci
         env:
-          # Does nothing today, in two senses: electron 44.2.0 ships no install script for
+          # Does nothing today, in two senses: the pinned electron ships no install script for
           # `npm ci` to run, and its install.js does not read this variable at all. Kept as
           # a zero-cost hedge only — it would help a future version that re-adds BOTH a
           # postinstall and the env check, which matters because dependabot groups electron
