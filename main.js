@@ -755,6 +755,7 @@ function createServiceView(s) {
     wc.executeJavaScript(BADGE_HOOK_JS).catch(() => {});
   });
   const poll = async () => {
+    if (views[s.id] !== view) return; // this view was recycled; its successor polls itself
     try {
       unreadBadge[s.id] = Number(await wc.executeJavaScript('window.__earshotBadge|0')) || 0;
       if (s.unreadJs) unreadDom[s.id] = Number(await wc.executeJavaScript(s.unreadJs)) || 0;
@@ -777,6 +778,7 @@ function createServiceView(s) {
     // those every 4 s for eight services is most of the main process's share of the
     // 11 % of a core Earshot burns while hidden. While the window is away it is read
     // every 15 s instead — still twice as often as the state file is republished.
+    if (views[s.id] !== view) return; // recycled mid-await: never steal the successor's timer
     pollTimer[s.id] = setTimeout(poll, isAway() ? IDLE_POLL_MS : POLL_MS);
   };
   pollTimer[s.id] = setTimeout(poll, POLL_MS);
@@ -812,9 +814,11 @@ function createServiceView(s) {
 
   views[s.id] = view;
   loadedAt[s.id] = Date.now();
-  unread[s.id] = 0;
-  unreadTitle[s.id] = 0;
-  unreadBadge[s.id] = 0;
+  // ??= because a recycled view comes through here too, and its last counts are what the
+  // tray keeps showing until the new page reports (see RELOAD_GRACE_MS).
+  unread[s.id] ??= 0;
+  unreadTitle[s.id] ??= 0;
+  unreadBadge[s.id] ??= 0;
 }
 
 // ---- keeping a long-lived hub small ---------------------------------------
@@ -824,8 +828,8 @@ function createServiceView(s) {
 // HTTP cache, 145 MB compiled-code cache. Both are recoverable, and neither is worth a
 // button (housekeeping you have to remember is housekeeping that never happens), so they
 // are recovered while the window is put away: the caches emptied once a day, and one view
-// at a time reloaded, which is the only thing that actually returns a renderer to its
-// load-time footprint. Counts survive both — they are re-derived from the page every 4 s.
+// at a time rebuilt in a fresh renderer process, which is the only thing that actually
+// returns it to its load-time footprint. Counts survive both — they are re-derived from the page every 4 s.
 //
 // What the reload half costs: text typed into a service and never sent is gone. So the
 // view you last had open is exempt (it holds the draft you are most likely to have), a
@@ -865,16 +869,36 @@ async function sweepCaches() {
   }
 }
 
-function recycleOldestView() {
+// Age alone lets one view sit at several times the others' size for hours. Measured
+// 2026-10-11 after 13 h up: one renderer at 432 MB resident (259 MB footprint, +80 MB in
+// the last 40 min) while the other five idled at 12-29 MB footprint. So a view resident
+// past this is recycled first, biggest first — but not within half an hour of its last
+// load, or a service whose fresh baseline is above the line would reload on every tick.
+const RECYCLE_ABOVE_KB = 400 * 1024;
+
+function recycleOneView() {
   const now = Date.now();
-  const next = SERVICES.filter((s) => s.id !== activeId)
-    .filter((s) => now - (loadedAt[s.id] || now) > RECYCLE_AFTER_MS)
-    .sort((a, b) => (loadedAt[a.id] || 0) - (loadedAt[b.id] || 0))[0];
-  const wc = next && views[next.id]?.webContents;
-  if (!wc || wc.isDestroyed() || wc.isLoading()) return;
-  loadedAt[next.id] = now; // claim it before reloading: a load that never finishes must
-  reloadingUntil[next.id] = now + RELOAD_GRACE_MS; // not have the next tick pick it again
-  wc.reload();
+  const rss = {};
+  for (const m of app.getAppMetrics()) rss[m.pid] = m.memory.workingSetSize; // KB
+  const memOf = (s) => rss[views[s.id]?.webContents.getOSProcessId()] || 0;
+  const age = (s) => now - (loadedAt[s.id] || now);
+  const others = SERVICES.filter((s) => s.id !== activeId);
+  const next =
+    others
+      .filter((s) => memOf(s) > RECYCLE_ABOVE_KB && age(s) > IDLE_MS)
+      .sort((a, b) => memOf(b) - memOf(a))[0] ||
+    others
+      .filter((s) => age(s) > RECYCLE_AFTER_MS)
+      .sort((a, b) => (loadedAt[a.id] || 0) - (loadedAt[b.id] || 0))[0];
+  const old = next && views[next.id];
+  if (!old || old.webContents.isDestroyed() || old.webContents.isLoading()) return;
+  // A NEW view, not wc.reload(): a reload stays in the same renderer process, and that
+  // process keeps what it grew — measured 2026-10-11, WhatsApp went 310 -> 358 -> 414 ->
+  // 417 MB across four reloads. Only a fresh process starts from the load-time footprint.
+  clearTimeout(pollTimer[next.id]);
+  reloadingUntil[next.id] = now + RELOAD_GRACE_MS;
+  createServiceView(next); // sets loadedAt, so the next tick does not pick it again
+  old.webContents.close();
 }
 
 // Put away: hidden, and hidden long enough that this is not just a glance elsewhere.
@@ -888,7 +912,7 @@ function maintain() {
     lastSweep = Date.now();
     sweepCaches();
   }
-  recycleOldestView(); // one per tick — eight at once is a stampede, not maintenance
+  recycleOneView(); // one per tick — eight at once is a stampede, not maintenance
 }
 
 function layout() {
