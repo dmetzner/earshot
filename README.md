@@ -86,8 +86,10 @@ window is put away — after 30 minutes hidden, once every 5 minutes:
 - each service's HTTP cache and compiled-code cache are emptied, once a day, and each
   cache is capped at 48 MB regardless. Cookies, IndexedDB and service workers are never
   touched — those are your logins and the apps' own offline stores.
-- one service view at a time is reloaded, oldest load first, if it has been up more than
-  6 hours. This is the only thing that actually gives a renderer its memory back.
+- one service view at a time is rebuilt in a fresh renderer process: first any view resident
+  above 400 MB (biggest first, at most every 30 minutes), otherwise the oldest one that
+  has been up more than 6 hours. A plain reload keeps the same process and gives nothing
+  back; a fresh process is the only thing that does.
 
 Counts survive both — they are re-derived from the page. The one thing a reload does cost
 you: **text typed into a service and never sent is gone.** The view you last had open is
