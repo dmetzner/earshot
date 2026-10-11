@@ -1,0 +1,23 @@
+[project]
+name = "earshot"
+version = "2.0.0"
+description = "Stay within earshot of every chat — a menubar/tray hub for Google Chat, Gmail, Slack, WhatsApp, Discord and any web chat, with per-service priority and unread counts. macOS and Windows."
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = ["pyside6>=6.10"]
+
+[dependency-groups]
+dev = ["ruff", "pyinstaller"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "E731"]
+
+[tool.ruff.format]
+quote-style = "single"

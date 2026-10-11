@@ -6,50 +6,33 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install deps
-        run: npm ci
+      - uses: astral-sh/setup-uv@v7
+      # Importing Qt WebEngine needs these system libraries even headless.
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libnss3 libasound2t64 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxkbfile1
+      - run: uv sync --frozen
+      - name: Ruff (lint + format check)
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Self-check
+        run: uv run python test_earshot.py
         env:
-          # Does nothing today, in two senses: electron 44.2.0 ships no install script for
-          # `npm ci` to run, and its install.js does not read this variable at all. Kept as
-          # a zero-cost hedge only — it would help a future version that re-adds BOTH a
-          # postinstall and the env check, which matters because dependabot groups electron
-          # with the other dev dependencies and dependabot-auto-merge.yml lands those
-          # unattended on green. A version that re-adds only the postinstall would download
-          # regardless; catching that needs a real check, not this.
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-      - name: Biome (lint + format check)
-        run: npx biome ci .
+          QT_QPA_PLATFORM: offscreen
 
-  # The build scripts carry most of this repo's failure-path logic and nothing above so much
-  # as parses them, so a syntax error in either would merge green — the dependabot
-  # auto-merge chain makes that a real path, not a hypothetical one. build.sh gets a syntax
-  # AND a lint gate; build.ps1 gets syntax only, since PSScriptAnalyzer is not on the runner.
-  # Neither script can be RUN in CI: each installs a desktop app.
+  # The build scripts cannot be RUN in CI (each installs a desktop app); at least parse them.
   scripts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: bash syntax
-        run: bash -n build.sh
-      - name: shellcheck
-        run: shellcheck build.sh
+      - run: bash -n build.sh && shellcheck build.sh
 
   build-ps1:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      # Windows PowerShell 5.1, not the runner's pwsh 7, because 5.1 is what runs this
-      # script: `npm run build:win` invokes powershell.exe. pwsh parses a superset — a
-      # ternary, ??, or a && pipeline chain would sail through a pwsh gate and then die at
-      # parse time on every real build, unattended-merged by dependabot on the way.
+      # Windows PowerShell 5.1, not pwsh 7: 5.1 is what runs the script on a real machine.
       - name: PowerShell syntax
         shell: powershell
         run: |
