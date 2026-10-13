@@ -484,7 +484,14 @@ function handleDeepLink(raw) {
   if (u.protocol !== 'earshot:') return;
   showWindow();
   // earshot://open/gchat -> host 'open', pathname '/gchat'
-  const id = decodeURIComponent(u.pathname.replace(/^\/+/, ''));
+  // A malformed escape (earshot://open/%E0%A4%A) makes decodeURIComponent throw, and in
+  // an open-url / second-instance handler that is an uncaught-exception dialog.
+  let id;
+  try {
+    id = decodeURIComponent(u.pathname.replace(/^\/+/, ''));
+  } catch {
+    return;
+  }
   if (u.host === 'open' && id && views[id]) switchTo(id);
 }
 
@@ -806,10 +813,17 @@ function createServiceView(s) {
   // Top-level self-navigation gets the same gate: only login + same-service hosts
   // may load in the authenticated persist: session. Off-domain navigations are
   // cancelled and handed to the external-browser path instead (M1, folded in).
-  wc.on('will-navigate', (e, url) => {
+  // Server-side redirects need it too: will-navigate never sees a 302, nor anything
+  // started by loadURL (the window-open handler above), so an allowed host that
+  // redirects off-domain would otherwise load foreign content in this session.
+  const gateNav = (e, url) => {
     if (classifyNav(url, serviceBase) === 'in-view') return;
     e.preventDefault();
     openExternalSafe(url);
+  };
+  wc.on('will-navigate', gateNav);
+  wc.on('will-redirect', (e) => {
+    if (e.isMainFrame) gateNav(e, e.url);
   });
 
   views[s.id] = view;

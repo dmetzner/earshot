@@ -3,8 +3,9 @@ name: Dependabot auto-merge
 # Dependency bumps should not wait on a human. This merges them once CI has passed.
 #
 # The green check happens here rather than in GitHub's auto-merge, because auto-merge only
-# waits for *required* status checks — and this repository is private on a plan where branch
-# protection is unavailable, so there is nothing that can be marked required. Gating on
+# waits for *required* status checks — and `main` has no branch protection or ruleset, so
+# nothing is marked required. (This was written while the repository was private, where
+# protection was unavailable; it is public now and could have it, but does not.) Gating on
 # `workflow_run.conclusion` is therefore the only thing keeping a red bump out of main.
 #
 # Consequence worth knowing: only the workflows listed below are covered. If another
