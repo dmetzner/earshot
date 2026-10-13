@@ -18,6 +18,7 @@
     "build": "./build.sh",
     "build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./build.ps1",
     "lint": "biome check .",
+    "test": "node --test",
     "format": "biome check --write ."
   },
   "engines": {

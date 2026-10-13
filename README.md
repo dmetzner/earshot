@@ -167,6 +167,7 @@ handing out. Only ids that match a service you configured are accepted.
 | File | Role |
 |------|------|
 | `main.js` | Electron main process — windows, service views, unread logic, tray, config, persistence |
+| `nav.js` | navigation policy for service views (what loads in-view vs. in the browser); `npm test` covers it |
 | `preload.js` | sidebar IPC bridge |
 | `sidebar.html` | the service sidebar (icons, badges, drag-reorder) |
 | `service-preload.js` | hooks the Badging API inside each service page |

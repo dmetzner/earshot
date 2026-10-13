@@ -208,7 +208,7 @@ fi
 
 # Sync app code (everything but node_modules + the build artifacts).
 mkdir -p "$APP"
-for f in main.js preload.js service-preload.js sidebar.html package.json \
+for f in main.js nav.js preload.js service-preload.js sidebar.html package.json \
          settings.html settings-preload.js; do
   cp "$SRC/$f" "$APP/$f"
 done
