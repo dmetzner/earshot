@@ -27,6 +27,8 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
       - name: Biome (lint + format check)
         run: npx biome ci .
+      - name: Tests
+        run: npm test
 
   # The build scripts carry most of this repo's failure-path logic and nothing above so much
   # as parses them, so a syntax error in either would merge green — the dependabot

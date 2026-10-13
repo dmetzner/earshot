@@ -318,7 +318,7 @@ if ($repaired -or -not (Test-Path -LiteralPath $destExe) -or $have -ne $markerWa
 # Sync app code (everything but node_modules and the build artifacts) — same list as
 # build.sh, and it has to stay the same list.
 New-Item -ItemType Directory -Force -Path $app | Out-Null
-foreach ($f in 'main.js', 'preload.js', 'service-preload.js', 'sidebar.html',
+foreach ($f in 'main.js', 'nav.js', 'preload.js', 'service-preload.js', 'sidebar.html',
                 'package.json', 'settings.html', 'settings-preload.js') {
   Copy-Item -LiteralPath (Join-Path $src $f) -Destination (Join-Path $app $f) -Force
 }
