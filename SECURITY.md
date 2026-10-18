@@ -15,6 +15,6 @@ Earshot holds logged-in sessions for every chat service you add, so the things m
 worth reporting are:
 
 - a way for a page to load, or navigate a service view to, content from a host
-  outside that service (the navigation gate is `classifyNav` in `main.js`);
+  outside that service (the navigation gate is `classifyNav` in `nav.js`);
 - a way for a service page, or any local process via an `earshot://` link, to reach
   the app's own IPC, the file system, or `shell.openExternal` with a non-http(s) URL.
