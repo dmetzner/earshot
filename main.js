@@ -327,6 +327,31 @@ function togglePrio(id) {
   updateTray();
 }
 
+// Two id sets from the sidebar's context menu, persisted like prio.json. PAUSED: the view
+// is destroyed (renderer process and all), so it costs nothing and reports nothing; its
+// persist:<id> partition stays on disk, so resuming comes back logged in. MUTED: the view
+// runs and counts in the sidebar as usual, but stays out of the tray, the dock badge and
+// the exported total.
+const paused = new Set();
+const muted = new Set();
+function idSetPath(name) {
+  return path.join(app.getPath('userData'), `${name}.json`);
+}
+function loadIdSet(name, set) {
+  try {
+    for (const id of JSON.parse(fs.readFileSync(idSetPath(name), 'utf8'))) {
+      if (SERVICES.some((s) => s.id === id)) set.add(id);
+    }
+  } catch {}
+}
+function saveIdSet(name, set) {
+  try {
+    fs.writeFileSync(idSetPath(name), JSON.stringify([...set]));
+  } catch {}
+}
+// What reaches the tray, the dock badge and the exported total.
+const counted = (id) => !paused.has(id) && !muted.has(id);
+
 // ---- single instance ----
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -364,7 +389,7 @@ function openExternalSafe(url) {
 }
 
 function totalUnread() {
-  return Object.values(unread).reduce((a, b) => a + b, 0);
+  return SERVICES.reduce((a, s) => a + (counted(s.id) ? unread[s.id] || 0 : 0), 0);
 }
 
 // ---- state export (for any other tool on this machine) --------------------
@@ -411,8 +436,11 @@ function writeState() {
         emoji: s.emoji,
         prio: prio[s.id] || s.prio,
         group: s.group || 'private',
-        unread: unread[s.id] || 0,
+        // null, not 0: a paused service is not watched, and a zero would read as all-clear.
+        unread: paused.has(s.id) ? null : unread[s.id] || 0,
         senders: senders[s.id] || [],
+        paused: paused.has(s.id),
+        muted: muted.has(s.id),
       })),
   };
   const p = statePath();
@@ -446,7 +474,7 @@ function handleDeepLink(raw) {
   } catch {
     return;
   }
-  if (u.host === 'open' && id && views[id]) switchTo(id);
+  if (u.host === 'open' && id && (views[id] || paused.has(id))) switchTo(id);
 }
 
 function sendState() {
@@ -457,6 +485,8 @@ function sendState() {
       name: s.name,
       icon: icons[s.id] || null,
       unread: unread[s.id] || 0,
+      paused: paused.has(s.id),
+      muted: muted.has(s.id),
     })),
     activeId,
   });
@@ -621,7 +651,7 @@ function fitTooltip(lines) {
 
 function updateTray() {
   if (!tray) return;
-  const unreadServices = orderedServices().filter((s) => unread[s.id] > 0);
+  const unreadServices = orderedServices().filter((s) => counted(s.id) && unread[s.id] > 0);
   const high = unreadServices.filter((s) => prio[s.id] === 'high');
   const low = unreadServices.filter((s) => prio[s.id] === 'low');
   const fmt = (arr) => arr.map((s) => `${s.emoji}${unread[s.id]}`).join(' ');
@@ -650,6 +680,7 @@ function updateTray() {
 }
 
 function recompute(id) {
+  if (paused.has(id)) return; // a closing view's last events must not resurrect a count
   const next = Math.max(unreadTitle[id] || 0, unreadBadge[id] || 0, unreadDom[id] || 0);
   // A view we recycled reports nothing for the second or two between load and first
   // paint, and a false all-clear is the single worst thing this app can show — it is
@@ -848,7 +879,7 @@ function recycleOneView() {
   for (const m of app.getAppMetrics()) rss[m.pid] = m.memory.workingSetSize; // KB
   const memOf = (s) => rss[views[s.id]?.webContents.getOSProcessId()] || 0;
   const age = (s) => now - (loadedAt[s.id] || now);
-  const others = SERVICES.filter((s) => s.id !== activeId);
+  const others = SERVICES.filter((s) => s.id !== activeId && views[s.id]);
   const next =
     others
       .filter((s) => memOf(s) > RECYCLE_ABOVE_KB && age(s) > IDLE_MS)
@@ -890,12 +921,84 @@ function layout() {
 }
 
 function switchTo(id) {
+  if (paused.has(id)) resumeService(id); // clicking a paused service is how you get it back
   if (id === activeId && views[id]) return;
   if (views[activeId]) win.contentView.removeChildView(views[activeId]);
   activeId = id;
   win.contentView.addChildView(views[id]);
   layout();
   sendState();
+}
+
+// Pause = the recycle path in recycleOneView without the successor: close() is what frees
+// the renderer process (a reload or a hidden view keeps it). The partition is untouched.
+function pauseService(id) {
+  const view = views[id];
+  if (!view || paused.has(id)) return;
+  paused.add(id);
+  saveIdSet('paused', paused);
+  clearTimeout(pollTimer[id]);
+  delete views[id];
+  if (id === activeId) {
+    win.contentView.removeChildView(view);
+    const next = order.find((x) => views[x]);
+    if (next) switchTo(next);
+  }
+  view.webContents.close();
+  unread[id] = unreadTitle[id] = unreadBadge[id] = unreadDom[id] = 0;
+  senders[id] = [];
+  updateTray();
+  sendState();
+  writeState();
+}
+
+function resumeService(id) {
+  const s = SERVICES.find((x) => x.id === id);
+  if (!s || !paused.delete(id)) return;
+  saveIdSet('paused', paused);
+  createServiceView(s);
+  if (id === activeId) {
+    win.contentView.addChildView(views[id]);
+    layout();
+  }
+  sendState();
+  writeState();
+}
+
+function toggleMute(id) {
+  if (!muted.delete(id)) muted.add(id);
+  saveIdSet('muted', muted);
+  updateTray();
+  sendState();
+  writeState();
+}
+
+// Right-click on a sidebar icon. The id has already been checked against SERVICES.
+function serviceMenu(s) {
+  const wc = views[s.id]?.webContents;
+  const isPaused = paused.has(s.id);
+  return Menu.buildFromTemplate([
+    {
+      label: isPaused ? 'Resume' : 'Pause (free its memory)',
+      click: () => (isPaused ? resumeService(s.id) : pauseService(s.id)),
+    },
+    {
+      label: 'Mute (keep out of the tray)',
+      type: 'checkbox',
+      checked: muted.has(s.id),
+      click: () => toggleMute(s.id),
+    },
+    { label: 'Reload', enabled: !!wc, click: () => wc?.reload() },
+    { label: 'Open in browser', click: () => openExternalSafe(wc?.getURL() || s.url) },
+    { type: 'separator' },
+    {
+      label: 'High priority (red alert)',
+      type: 'checkbox',
+      checked: prio[s.id] === 'high',
+      click: () => togglePrio(s.id),
+    },
+    { label: 'Edit service…', click: openSettings },
+  ]);
 }
 
 function showWindow() {
@@ -948,8 +1051,9 @@ function createWindow() {
 
   // All services load up front (in the background) so unread counts stay live;
   // only the active one is attached to the layout.
-  SERVICES.forEach(createServiceView);
-  win.contentView.addChildView(views[activeId]);
+  SERVICES.filter((s) => !paused.has(s.id)).forEach(createServiceView);
+  if (!views[activeId]) activeId = order.find((id) => views[id]) || activeId;
+  if (views[activeId]) win.contentView.addChildView(views[activeId]);
 
   sidebar.webContents.on('did-finish-load', sendState);
   win.on('resize', layout);
@@ -984,7 +1088,11 @@ ipcMain.on('close-settings', (event) => {
   if (fromSettings(event)) settingsWin?.close();
 });
 ipcMain.on('switch', (event, id) => {
-  if (fromSidebar(event) && views[id]) switchTo(id);
+  if (fromSidebar(event) && (views[id] || paused.has(id))) switchTo(id);
+});
+ipcMain.on('service-menu', (event, id) => {
+  const s = fromSidebar(event) && SERVICES.find((x) => x.id === id);
+  if (s) serviceMenu(s).popup({ window: win });
 });
 ipcMain.on('reorder', (event, ids) => {
   if (!fromSidebar(event)) return;
@@ -1050,6 +1158,8 @@ app.whenReady().then(() => {
   initFromServices();
   loadOrder();
   loadPrio();
+  loadIdSet('paused', paused);
+  loadIdSet('muted', muted);
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
   // `earshot://open/<id>` — registered at runtime so a dev run (`npm start`) answers it
   // too, not only the packaged app.
@@ -1070,7 +1180,7 @@ app.whenReady().then(() => {
   tray.on('right-click', () => {
     const menu = Menu.buildFromTemplate([
       ...orderedServices().map((s) => ({
-        label: `${s.name}${unread[s.id] ? `  (${unread[s.id]})` : ''}`,
+        label: `${s.name}${paused.has(s.id) ? '  (paused)' : unread[s.id] ? `  (${unread[s.id]})` : ''}`,
         click: () => {
           showWindow();
           switchTo(s.id);
