@@ -10,6 +10,7 @@ const {
   session,
 } = require('electron');
 const path = require('node:path');
+const { baseDomain, classifyNav, redirectTarget } = require('./nav');
 const fs = require('node:fs');
 
 const CHROME_MAJOR = '140';
@@ -351,53 +352,6 @@ function parseUnread(title) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
-// Registrable-domain approximation. No PSL available (no new deps), so this is a
-// best-effort last-two-labels heuristic used only to derive the same-service base.
-function baseDomain(host) {
-  const p = host.split('.');
-  return p.slice(-2).join('.');
-}
-
-// Domain-boundary match: host must BE serviceBase or a real subdomain of it.
-// serviceBase `slack.com` accepts `slack.com` / `app.slack.com` but rejects
-// `myslack.com` / `evilslack.com` — a plain `endsWith` suffix check accepts those.
-function sameService(host, serviceBase) {
-  return host === serviceBase || host.endsWith(`.${serviceBase}`);
-}
-
-// Some services wrap outbound links in a SAME-domain redirector — Gmail/Google
-// Chat send you through https://www.google.com/url?q=<real target>. Left in-view
-// these hijack the app pane (base domain matches, so classifyNav would allow
-// them); detect them and hand off the *real* target to the OS browser instead.
-function redirectTarget(url) {
-  let u;
-  try {
-    u = new URL(url);
-  } catch {
-    return null;
-  }
-  if (/(^|\.)google\.[a-z.]+$/.test(u.hostname) && u.pathname === '/url') {
-    const t = u.searchParams.get('q') || u.searchParams.get('url');
-    if (t && /^https?:\/\//i.test(t)) return t;
-  }
-  return null;
-}
-
-// Gate a target URL for a service view: allow login hosts + same-service
-// navigation to load in-view; everything else is external. Returns the decision
-// so both the window-open handler and will-navigate can share one policy.
-function classifyNav(url, serviceBase) {
-  let host;
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    return 'deny';
-  }
-  if (redirectTarget(url)) return 'external';
-  if (isLoginHost(host) || sameService(host, serviceBase)) return 'in-view';
-  return 'external';
-}
-
 // Only http/https may reach the OS browser. file://, smb://, custom app schemes,
 // etc. are dropped — shell.openExternal on those is an RCE/exfil primitive.
 // Redirector URLs are unwrapped so the browser opens the real destination.
@@ -484,7 +438,14 @@ function handleDeepLink(raw) {
   if (u.protocol !== 'earshot:') return;
   showWindow();
   // earshot://open/gchat -> host 'open', pathname '/gchat'
-  const id = decodeURIComponent(u.pathname.replace(/^\/+/, ''));
+  // A malformed escape (earshot://open/%E0%A4%A) makes decodeURIComponent throw, and in
+  // an open-url / second-instance handler that is an uncaught-exception dialog.
+  let id;
+  try {
+    id = decodeURIComponent(u.pathname.replace(/^\/+/, ''));
+  } catch {
+    return;
+  }
   if (u.host === 'open' && id && views[id]) switchTo(id);
 }
 
@@ -688,12 +649,6 @@ function updateTray() {
   if (app.dock) app.dock.setBadge(totalUnread() > 0 ? String(totalUnread()) : '');
 }
 
-function isLoginHost(host) {
-  return /(^|\.)accounts\.google\.com$|(^|\.)accounts\.youtube\.com$|(^|\.)login\.microsoftonline\.com$/.test(
-    host,
-  );
-}
-
 function recompute(id) {
   const next = Math.max(unreadTitle[id] || 0, unreadBadge[id] || 0, unreadDom[id] || 0);
   // A view we recycled reports nothing for the second or two between load and first
@@ -810,6 +765,17 @@ function createServiceView(s) {
     if (classifyNav(url, serviceBase) === 'in-view') return;
     e.preventDefault();
     openExternalSafe(url);
+  });
+  // Server-side redirects need the gate too: will-navigate never sees a 302, nor anything
+  // started by loadURL (the window-open handler above), so an allowed host that
+  // redirects off-domain would otherwise load foreign content in this session.
+  // Cancelled SILENTLY, not handed to the browser: a redirect is not something the user
+  // clicked, and a recycled view with an expired session would otherwise open a browser
+  // tab on every reload.
+  wc.on('will-redirect', (e) => {
+    if (!e.isMainFrame || classifyNav(e.url, serviceBase) === 'in-view') return;
+    e.preventDefault();
+    console.warn(`earshot: blocked an off-service redirect in ${s.id}`);
   });
 
   views[s.id] = view;
