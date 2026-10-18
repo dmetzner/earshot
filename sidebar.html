@@ -145,7 +145,6 @@
       if (!el) {
         el = document.createElement('div');
         el.className = 'item';
-        el.title = s.name;
         el.dataset.id = s.id;
         el.draggable = true;
         el.onclick = () => { if (!dragging) window.hub.switch(s.id); };

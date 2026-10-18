@@ -325,6 +325,7 @@ function togglePrio(id) {
     fs.writeFileSync(prioPath(), JSON.stringify(prio));
   } catch {}
   updateTray();
+  writeState();
 }
 
 // Two id sets from the sidebar's context menu, persisted like prio.json. PAUSED: the view
@@ -334,6 +335,7 @@ function togglePrio(id) {
 // the exported total.
 const paused = new Set();
 const muted = new Set();
+const waking = new Set(); // resumed, but its page has not reported a count yet
 function idSetPath(name) {
   return path.join(app.getPath('userData'), `${name}.json`);
 }
@@ -437,7 +439,7 @@ function writeState() {
         prio: prio[s.id] || s.prio,
         group: s.group || 'private',
         // null, not 0: a paused service is not watched, and a zero would read as all-clear.
-        unread: paused.has(s.id) ? null : unread[s.id] || 0,
+        unread: paused.has(s.id) || waking.has(s.id) ? null : unread[s.id] || 0,
         senders: senders[s.id] || [],
         paused: paused.has(s.id),
         muted: muted.has(s.id),
@@ -474,7 +476,7 @@ function handleDeepLink(raw) {
   } catch {
     return;
   }
-  if (u.host === 'open' && id && (views[id] || paused.has(id))) switchTo(id);
+  if (u.host === 'open' && id && (Object.hasOwn(views, id) || paused.has(id))) switchTo(id);
 }
 
 function sendState() {
@@ -681,6 +683,7 @@ function updateTray() {
 
 function recompute(id) {
   if (paused.has(id)) return; // a closing view's last events must not resurrect a count
+  waking.delete(id);
   const next = Math.max(unreadTitle[id] || 0, unreadBadge[id] || 0, unreadDom[id] || 0);
   // A view we recycled reports nothing for the second or two between load and first
   // paint, and a false all-clear is the single worst thing this app can show — it is
@@ -743,8 +746,11 @@ function createServiceView(s) {
   const poll = async () => {
     if (views[s.id] !== view) return; // this view was recycled; its successor polls itself
     try {
-      unreadBadge[s.id] = Number(await wc.executeJavaScript('window.__earshotBadge|0')) || 0;
-      if (s.unreadJs) unreadDom[s.id] = Number(await wc.executeJavaScript(s.unreadJs)) || 0;
+      const badge = Number(await wc.executeJavaScript('window.__earshotBadge|0')) || 0;
+      const dom = s.unreadJs ? Number(await wc.executeJavaScript(s.unreadJs)) || 0 : 0;
+      if (views[s.id] !== view) return; // paused or recycled mid-await: not ours to write
+      unreadBadge[s.id] = badge;
+      if (s.unreadJs) unreadDom[s.id] = dom;
       recompute(s.id);
       // Names only while something is unread — with an empty inbox there is nobody to
       // name, and the extractor would still walk the whole DOM every 4s in a background
@@ -752,6 +758,7 @@ function createServiceView(s) {
       if (s.sendersJs) {
         const next =
           unread[s.id] > 0 ? sanitizeSenders(await wc.executeJavaScript(s.sendersJs)) : [];
+        if (views[s.id] !== view) return;
         if (JSON.stringify(next) !== JSON.stringify(senders[s.id] || [])) {
           senders[s.id] = next;
           writeState(); // a changed sender list is news even when the count didn't move
@@ -956,6 +963,7 @@ function resumeService(id) {
   const s = SERVICES.find((x) => x.id === id);
   if (!s || !paused.delete(id)) return;
   saveIdSet('paused', paused);
+  waking.add(id);
   createServiceView(s);
   if (id === activeId) {
     win.contentView.addChildView(views[id]);
@@ -975,7 +983,7 @@ function toggleMute(id) {
 
 // Right-click on a sidebar icon. The id has already been checked against SERVICES.
 function serviceMenu(s) {
-  const wc = views[s.id]?.webContents;
+  const live = () => views[s.id]?.webContents; // looked up on click: the view may be replaced
   const isPaused = paused.has(s.id);
   return Menu.buildFromTemplate([
     {
@@ -988,8 +996,8 @@ function serviceMenu(s) {
       checked: muted.has(s.id),
       click: () => toggleMute(s.id),
     },
-    { label: 'Reload', enabled: !!wc, click: () => wc?.reload() },
-    { label: 'Open in browser', click: () => openExternalSafe(wc?.getURL() || s.url) },
+    { label: 'Reload', enabled: !!live(), click: () => live()?.reload() },
+    { label: 'Open in browser', click: () => openExternalSafe(live()?.getURL() || s.url) },
     { type: 'separator' },
     {
       label: 'High priority (red alert)',
@@ -997,7 +1005,7 @@ function serviceMenu(s) {
       checked: prio[s.id] === 'high',
       click: () => togglePrio(s.id),
     },
-    { label: 'Edit service…', click: openSettings },
+    { label: 'Edit services…', click: openSettings },
   ]);
 }
 
@@ -1088,7 +1096,7 @@ ipcMain.on('close-settings', (event) => {
   if (fromSettings(event)) settingsWin?.close();
 });
 ipcMain.on('switch', (event, id) => {
-  if (fromSidebar(event) && (views[id] || paused.has(id))) switchTo(id);
+  if (fromSidebar(event) && (Object.hasOwn(views, id) || paused.has(id))) switchTo(id);
 });
 ipcMain.on('service-menu', (event, id) => {
   const s = fromSidebar(event) && SERVICES.find((x) => x.id === id);

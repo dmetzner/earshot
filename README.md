@@ -40,11 +40,12 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
   - **Pause / Resume** — pausing closes the service's renderer process, so it uses no
     memory and reports nothing: its icon greys out with a ⏸, it drops out of the tray, and
     clicking it resumes it. Logins survive (the `persist:<id>` partition is kept), and so
-    does the paused state across a restart.
+    does the paused state across a restart. Like a recycle, it drops text typed into that
+    service and never sent.
   - **Mute** — keeps running and counting in the sidebar (grey badge), but stays out of the
     tray, the dock badge and the exported `total`.
   - **Reload**, **Open in browser** (its current page, http/https only), **High priority**
-    (the same toggle as the tray menu), **Edit service…**
+    (the same toggle as the tray menu), **Edit services…**
 - **Config UI** — add / edit / remove services from a Settings window. No code editing.
 - **Login stays in-app**, including Google sign-in (loaded in-view, not a popup).
 - **Who messaged you**, not just how many — an optional per-service `sendersJs` extracts
