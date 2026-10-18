@@ -35,7 +35,7 @@ what is different on Windows.
 | Renderer with no service id (probably a service worker) | 41 | 52 | 99 | 0.13 |
 | Network service | 29 | 34 | 75 | 0.01 |
 | GPU process (software compositing) | 26 | 34 | 104 | 0.01 |
-| Sidebar renderer / the window's own blank renderer | 16 + 13 | 26 + 21 | 71 + 54 | 0.03 |
+| Sidebar renderer and the window's own blank renderer (order not known) | 16 + 13 | 26 + 21 | 71 + 54 | 0.03 |
 | Video capture service | 7 | 14 | 105 | 0.00 |
 | Audio service | 6 | 10 | 99 | 0.00 |
 | **Total** | **≈1,170** | **≈1,375** | (double-counted) | **1.89** |
@@ -48,12 +48,12 @@ CacheStorage), and WhatsApp's is 53 MB (37 MB CacheStorage). The HTTP cache cap 
 
 ## Findings
 
-1. **The installed build is stale.** It was built on 2026-09-09 with Electron 44.2.0, and it
+1. **The installed build is stale.** It was built on 2026-09-09 with Electron 44.2.0 (current `main`: ^44.7.0), and it
    lacks #21 (skip the tray, sidebar and state-file work when a count did not change), #23
    (sweep service-worker CacheStorage), #27 (recycle the biggest view first) and #29 (redirect
    gate). Without #21, every 4 s poll of every view repaints the tray (three bitmaps and a shell
    update) and rewrites `unread.json`. During measurement the file was rewritten at least 10
-   times in 20 s, where current `main` writes it on a 30 s heartbeat plus once per real change. That work is most of the main
+   times in 20 s, where current `main` writes it on a 30 s heartbeat plus once per real count or sender change. That work is most of the main
    process's 0.72 % (an estimate: a current build was not measured on this machine). The missing #23 is why Slack's service-worker store has reached 387 MB.
 2. **On Windows, "away" never starts while the window is visible but covered.** `isAway()`
    requires `!win.isVisible()`. A window left open behind other windows counts as visible, so
@@ -62,8 +62,9 @@ CacheStorage), and WhatsApp's is 53 MB (37 MB CacheStorage). The HTTP cache cap 
    macOS habit of putting the window away does not carry over to Windows.
 3. **The window owns a renderer it never uses.** `new BrowserWindow(...)` creates its own
    `webContents`, which stays on `about:blank` because all content lives in child
-   `WebContentsView`s. That costs one renderer. Of the two renderers without a service id and
-   with no load (sidebar and blank window), the smaller one is 21 MB private bytes.
+   `WebContentsView`s. That costs one renderer. Two of the three renderers without a service id are
+   the sidebar and this blank one. The command line cannot tell them apart, so the estimate is
+   the smaller of the two: about 21 MB private bytes.
 4. **The recycle threshold measures something different on Windows.** `RECYCLE_ABOVE_KB`
    is compared with `getAppMetrics().memory.workingSetSize`. On Windows that value includes about
    60 MB of shared pages per renderer, so the 400 MB line works out to roughly 340 MB of private
@@ -89,8 +90,8 @@ What is fine on Windows:
 | # | Change | Expected saving | Risk | Touches |
 |---|---|---|---|---|
 | 1 | Reinstall from current `main` (`npm run build:win`) | Estimated: main process ≈0.6 % of a core → ≈0.05 %; state-file writes drop from tens of thousands a day to a 2,880 a day floor plus real changes; daily sweep frees ≈420 MB of CacheStorage (once 2 is fixed); picks up the #29 security fix | None. Sessions live in `userData`, which an install does not touch. Earshot has to be quit for the install. | Nothing (operational) |
-| 2 | Count "not focused for 30 min" as away, not only "hidden" (track `blur`/`focus` and `minimize`/`restore` as well as `hide`) | Turns on recycling and the cache sweep for a window that is left open. Today WhatsApp, Discord and Slack sit at 250–320 MB private after 2 h. On macOS a view grew to 432 MB by 13 h, so expect 100–300 MB back over a day. Poll cost −70 % while away. | Low. The active view stays exempt from recycling, and hidden views are not attached, so a recycle cannot be seen. | `main.js` |
-| 3 | `BaseWindow` instead of `BrowserWindow` for the hub window | ≈21 MB private bytes, one fewer renderer process | Low. Everything visible already lives in child views. Check that `show`/`hide`/`maximize` and the close handler behave the same. | `main.js` |
+| 2 | Count "not focused for 30 min" as away, not only "hidden" (track `blur`/`focus` and `minimize`/`restore` as well as `hide`, each setting the away clock the way `hide` sets `hiddenSince`) | Turns on recycling and the cache sweep for a window that is left open. Today WhatsApp, Discord and Slack sit at 250–320 MB private after 2 h. On macOS a view grew to 432 MB by 13 h, so expect 100–300 MB back over a day. Poll cost −70 % while away. | Low. The active view stays exempt from recycling, and hidden views are not attached, so a recycle cannot be seen. | `main.js` |
+| 3 | `BaseWindow` instead of `BrowserWindow` for the hub window | ≈21 MB private bytes (estimated), one fewer renderer process | Low. Everything visible already lives in child views. Check that `show`/`hide`/`maximize` and the close handler behave the same. | `main.js` |
 | 4 | Compare the recycle threshold against `privateBytes` on Windows | Accuracy, not MB. The 400 MB line then means the same thing on both platforms. | Low | `main.js` |
 | 5 | Pause a rarely used service (a sidebar context menu) | One whole renderer each: Discord 269 MB, WhatsApp 317 MB private bytes | None while paused. The cost is that the service shows no counts while paused. | `main.js`, `sidebar.html` |
 
