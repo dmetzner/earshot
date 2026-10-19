@@ -36,6 +36,16 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
   3. an optional **per-service DOM extractor** — e.g. Google Chat reports unread only in `aria-label`s
 - **Per-service priority** — `high` (red alert) vs `low` (quiet). Toggle any service at runtime; persisted.
 - **Drag-to-reorder** the sidebar; order persisted.
+- **Right-click a sidebar icon** for that service's menu:
+  - **Pause / Resume** — pausing closes the service's renderer process, so it uses no
+    memory and reports nothing: its icon greys out with a ⏸, it drops out of the tray, and
+    clicking it resumes it. Logins survive (the `persist:<id>` partition is kept), and so
+    does the paused state across a restart. Like a recycle, it drops text typed into that
+    service and never sent.
+  - **Mute** — keeps running and counting in the sidebar (grey badge), but stays out of the
+    tray, the dock badge and the exported `total`.
+  - **Reload**, **Open in browser** (its current page, http/https only), **High priority**
+    (the same toggle as the tray menu), **Edit services…**
 - **Config UI** — add / edit / remove services from a Settings window. No code editing.
 - **Login stays in-app**, including Google sign-in (loaded in-view, not a popup).
 - **Who messaged you**, not just how many — an optional per-service `sendersJs` extracts
@@ -107,7 +117,7 @@ Services are stored in `services.json` inside Electron's userData directory — 
 
 Saving rewrites the config and restarts the app. **Logins are preserved** — sessions are keyed by each service's stable id.
 
-Other state, all in the same folder: `order.json` (sidebar order), `prio.json` (priority overrides), `Partitions/<id>/` (per-service cookies/sessions).
+Other state, all in the same folder: `order.json` (sidebar order), `prio.json` (priority overrides), `paused.json` / `muted.json` (services paused or muted from the sidebar menu), `Partitions/<id>/` (per-service cookies/sessions).
 
 ## Adding a service that needs custom unread detection
 
@@ -128,9 +138,11 @@ changed**:
   "total": 3,
   "services": [
     { "id": "gchat", "name": "Google Chat", "emoji": "\ud83d\udcac", "prio": "high",
-      "group": "work", "unread": 2, "senders": ["Ada Lovelace"] },
+      "group": "work", "unread": 2, "senders": ["Ada Lovelace"], "paused": false, "muted": false },
     { "id": "whatsapp", "name": "WhatsApp", "emoji": "\ud83d\udfe2", "prio": "low",
-      "group": "private", "unread": 1, "senders": [] }
+      "group": "private", "unread": 1, "senders": [], "paused": false, "muted": false },
+    { "id": "discord", "name": "Discord", "emoji": "\ud83c\udfae", "prio": "low",
+      "group": "private", "unread": null, "senders": [], "paused": true, "muted": false }
   ]
 }
 ```
@@ -139,7 +151,9 @@ The `at` stamp is a **heartbeat, not a change log**. That is the point: it lets 
 tell "no unread messages" (fresh file, all zeros) from "Earshot is not running" (stale
 file). A quiet app that writes nothing looks identical to a dead one, and zeros rendered
 as an all-clear is the failure worth spending a timer on. Treat the file as stale after
-~2 heartbeats.
+~2 heartbeats. For the same reason a **paused** service reports `"unread": null`, not `0`:
+nothing is watching it. `total` is what the tray shows, so it leaves out paused and muted
+services; a muted one still carries its own `unread`.
 
 `senders` names come out of an untrusted web page, so they are bounded where they enter
 the file — strings only, max 5 per service, 60 chars each, control characters stripped.
@@ -160,7 +174,7 @@ file carries each service's emoji, so the default cp1252 decode fails, and a URL
 
 There is deliberately **no url parameter**: any process on the machine can open a URL
 scheme, and "load this address in one of my logged-in sessions" is not a knob worth
-handing out. Only ids that match a service you configured are accepted.
+handing out. Only ids that match a service you configured are accepted; a paused service is resumed.
 
 ## Code layout
 

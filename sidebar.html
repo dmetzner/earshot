@@ -69,6 +69,18 @@
     display: none;
   }
   .badge.show { display: block; }
+  /* muted: still counted here, just not in the tray */
+  .item.muted .badge { background: #5c5f66; }
+  /* paused: view destroyed, nothing counted; a click resumes it */
+  .item.paused img, .item.paused .letter { opacity: .35; filter: grayscale(1); }
+  .item.paused::after {
+    content: "⏸";
+    position: absolute;
+    bottom: -3px;
+    right: -3px;
+    font-size: 13px;
+    color: #dbdee1;
+  }
   /* nav row (back / home) pinned above the service list */
   .nav {
     display: flex;
@@ -133,10 +145,10 @@
       if (!el) {
         el = document.createElement('div');
         el.className = 'item';
-        el.title = s.name;
         el.dataset.id = s.id;
         el.draggable = true;
         el.onclick = () => { if (!dragging) window.hub.switch(s.id); };
+        el.oncontextmenu = (e) => { e.preventDefault(); window.hub.menu(s.id); };
         el.addEventListener('dragstart', () => { dragging = true; el.classList.add('dragging'); });
         el.addEventListener('dragend', () => {
           el.classList.remove('dragging');
@@ -169,6 +181,9 @@
         badge.classList.remove('show');
       }
       el.classList.toggle('active', s.id === state.activeId);
+      el.classList.toggle('paused', s.paused);
+      el.classList.toggle('muted', s.muted);
+      el.title = s.paused ? `${s.name} (paused, click to resume)` : s.name;
     });
     // Apply the order from main (loaded/saved), but never fight an in-progress drag.
     if (!dragging) for (const s of state.services) list.appendChild(els[s.id]);
