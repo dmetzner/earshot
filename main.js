@@ -683,17 +683,19 @@ function updateTray() {
 
 function recompute(id) {
   if (paused.has(id)) return; // a closing view's last events must not resurrect a count
-  waking.delete(id);
   const next = Math.max(unreadTitle[id] || 0, unreadBadge[id] || 0, unreadDom[id] || 0);
   // A view we recycled reports nothing for the second or two between load and first
   // paint, and a false all-clear is the single worst thing this app can show — it is
   // believed, and it is shown exactly while you are away. So a drop to zero inside a
   // reload we started is held back; the page reports the real count moments later.
   if (next === 0 && Date.now() < (reloadingUntil[id] || 0)) return;
+  // A resumed service stays "unknown" (null in unread.json) until a count gets past the
+  // grace above; that first accepted count is published even when it equals the old 0.
+  const wasWaking = waking.delete(id);
   // Every view's poll lands here every few seconds and the count almost never moved.
   // Repainting the tray (three bitmaps + a shell redraw on Windows), messaging the sidebar
   // and rewriting the state file for an unchanged number was the bulk of the idle cost.
-  if (next === unread[id]) return;
+  if (!wasWaking && next === unread[id]) return;
   unread[id] = next;
   updateTray();
   sendState();
@@ -737,6 +739,7 @@ function createServiceView(s) {
   // via executeJavaScript on each load: the override stashes the latest count on
   // a window global that we poll — same mechanism as the DOM extractor.
   wc.on('page-title-updated', (_e, title) => {
+    if (views[s.id] !== view) return; // a closing (paused/recycled) view must not leave a count
     unreadTitle[s.id] = parseUnread(title);
     recompute(s.id);
   });
@@ -964,6 +967,8 @@ function resumeService(id) {
   if (!s || !paused.delete(id)) return;
   saveIdSet('paused', paused);
   waking.add(id);
+  // The booting page's bare title reads 0 before its counts paint: same grace as a recycle.
+  reloadingUntil[id] = Date.now() + RELOAD_GRACE_MS;
   createServiceView(s);
   if (id === activeId) {
     win.contentView.addChildView(views[id]);
@@ -996,7 +1001,14 @@ function serviceMenu(s) {
       checked: muted.has(s.id),
       click: () => toggleMute(s.id),
     },
-    { label: 'Reload', enabled: !!live(), click: () => live()?.reload() },
+    {
+      label: 'Reload',
+      enabled: !!live(),
+      click: () => {
+        reloadingUntil[s.id] = Date.now() + RELOAD_GRACE_MS; // no false zero while it loads
+        live()?.reload();
+      },
+    },
     { label: 'Open in browser', click: () => openExternalSafe(live()?.getURL() || s.url) },
     { type: 'separator' },
     {
