@@ -859,6 +859,10 @@ let lastSweep = 0;
 let maintainTimer = null;
 const loadedAt = {}; // id -> ms, when its document last finished loading
 const reloadingUntil = {}; // id -> ms, grace window of a reload we asked for
+// Every reload or reboot of a page we start: its bare title reads 0 before the counts paint.
+function holdZero(id) {
+  reloadingUntil[id] = Date.now() + RELOAD_GRACE_MS;
+}
 const pollTimer = {}; // id -> the pending backstop poll, so a quit can cancel it
 
 async function sweepCaches() {
@@ -967,8 +971,7 @@ function resumeService(id) {
   if (!s || !paused.delete(id)) return;
   saveIdSet('paused', paused);
   waking.add(id);
-  // The booting page's bare title reads 0 before its counts paint: same grace as a recycle.
-  reloadingUntil[id] = Date.now() + RELOAD_GRACE_MS;
+  holdZero(id);
   createServiceView(s);
   if (id === activeId) {
     win.contentView.addChildView(views[id]);
@@ -1005,7 +1008,7 @@ function serviceMenu(s) {
       label: 'Reload',
       enabled: !!live(),
       click: () => {
-        reloadingUntil[s.id] = Date.now() + RELOAD_GRACE_MS; // no false zero while it loads
+        holdZero(s.id);
         live()?.reload();
       },
     },
@@ -1123,7 +1126,9 @@ ipcMain.on('reorder', (event, ids) => {
   sendState();
 });
 ipcMain.on('reload', (event) => {
-  if (fromSidebar(event)) views[activeId]?.webContents.reload();
+  if (!fromSidebar(event)) return;
+  holdZero(activeId);
+  views[activeId]?.webContents.reload();
 });
 ipcMain.on('back', (event) => {
   if (!fromSidebar(event)) return;
@@ -1140,7 +1145,9 @@ ipcMain.on('forward', (event) => {
 ipcMain.on('home', (event) => {
   if (!fromSidebar(event)) return;
   const s = SERVICES.find((x) => x.id === activeId);
-  if (s) views[activeId]?.webContents.loadURL(s.url, { userAgent: CHROME_UA });
+  if (!s) return;
+  holdZero(activeId);
+  views[activeId]?.webContents.loadURL(s.url, { userAgent: CHROME_UA });
 });
 
 // Menubar app: the window is hidden ~all the time and the web views don't need
@@ -1218,7 +1225,13 @@ app.whenReady().then(() => {
       },
       { type: 'separator' },
       { label: 'Edit services…', click: openSettings },
-      { label: 'Reload current', click: () => views[activeId]?.webContents.reload() },
+      {
+        label: 'Reload current',
+        click: () => {
+          holdZero(activeId);
+          views[activeId]?.webContents.reload();
+        },
+      },
       { label: 'Quit', click: () => app.quit() }, // before-quit sets the flag
     ]);
     tray.popUpContextMenu(menu);
