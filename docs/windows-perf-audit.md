@@ -1,5 +1,7 @@
 # Windows 11 memory and CPU audit, October 2026
 
+Answers: where Earshot's memory and CPU go on Windows 11, and which changes would cut them.
+
 A follow-up to the macOS audit of 2026-10-11, whose fix shipped as #27. That audit already ruled out a Qt port,
 `wc.reload()` as a way to free memory, in-process GPU, `renderer-process-limit`,
 low-end-device mode and the V8 size flags, so none of them are repeated here. This one asks
@@ -95,6 +97,8 @@ What is fine on Windows:
 | 3 | `BaseWindow` instead of `BrowserWindow` for the hub window | ≈21 MB private bytes (estimated), one fewer renderer process | Low. Everything visible already lives in child views. Check that `show`/`hide`/`maximize` and the close handler behave the same. | `main.js` |
 | 4 | Compare the recycle threshold against `privateBytes` on Windows | Accuracy, not MB. The 400 MB line then means the same thing on both platforms. | Low | `main.js` |
 | 5 | Pause a rarely used service (a sidebar context menu) | One whole renderer each: Discord 269 MB, WhatsApp 317 MB private bytes | None while paused. The cost is that the service shows no counts while paused. | `main.js`, `sidebar.html` |
+
+Number 5 shipped as #31 (sidebar Pause).
 
 The two biggest code wins are 2 and 3, and both need `main.js`. This audit only writes them up.
 Number 1 needs no code at all.
