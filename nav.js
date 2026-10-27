@@ -59,4 +59,18 @@ function classifyNav(url, serviceBase) {
   return 'external';
 }
 
-module.exports = { baseDomain, classifyNav, isLoginHost, redirectTarget };
+// A link that asks for a new window (target=_blank, window.open) is the user opening
+// something next to the chat, not moving the chat: it goes to the OS browser even on
+// the service's own domain (a Docs link in Google Chat would otherwise replace Chat).
+// Only sign-in popups stay in-view, so their cookies land in the view's session.
+function classifyPopup(url) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return 'deny';
+  }
+  return isLoginHost(host) && !redirectTarget(url) ? 'in-view' : 'external';
+}
+
+module.exports = { baseDomain, classifyNav, classifyPopup, isLoginHost, redirectTarget };

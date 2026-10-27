@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { classifyNav, isLoginHost } = require('../nav');
+const { classifyNav, classifyPopup, isLoginHost } = require('../nav');
 
 test('isLoginHost accepts the sign-in hosts Google and Microsoft redirect through', () => {
   for (const h of [
@@ -41,4 +41,11 @@ test('classifyNav keeps same-service and login hosts in-view, sends the rest out
     'external',
   );
   assert.strictEqual(classifyNav('not a url', 'slack.com'), 'deny');
+});
+
+test('classifyPopup sends new-window links out, even on the service domain', () => {
+  assert.strictEqual(classifyPopup('https://docs.google.com/document/d/x'), 'external');
+  assert.strictEqual(classifyPopup('https://app.slack.com/client'), 'external');
+  assert.strictEqual(classifyPopup('https://accounts.google.com/o/oauth2/auth'), 'in-view');
+  assert.strictEqual(classifyPopup('not a url'), 'deny');
 });

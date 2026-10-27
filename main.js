@@ -7,10 +7,11 @@ const {
   nativeImage,
   shell,
   ipcMain,
+  clipboard,
   session,
 } = require('electron');
 const path = require('node:path');
-const { baseDomain, classifyNav, redirectTarget } = require('./nav');
+const { baseDomain, classifyNav, classifyPopup, redirectTarget } = require('./nav');
 const fs = require('node:fs');
 
 const CHROME_MAJOR = '140';
@@ -790,10 +791,10 @@ function createServiceView(s) {
     }
   });
 
-  // Popups: login + same-service targets load in THIS view; external http/https
-  // links go to the real browser; everything else (bad scheme/URL) is dropped.
+  // Popups: sign-in targets load in THIS view; every other http/https link goes to the
+  // real browser; everything else (bad scheme/URL) is dropped.
   wc.setWindowOpenHandler(({ url }) => {
-    const decision = classifyNav(url, serviceBase);
+    const decision = classifyPopup(url);
     if (decision === 'in-view') wc.loadURL(url);
     else if (decision === 'external') openExternalSafe(url);
     return { action: 'deny' };
@@ -818,6 +819,8 @@ function createServiceView(s) {
     e.preventDefault();
     console.warn(`earshot: blocked an off-service redirect in ${s.id}`);
   });
+
+  wc.on('context-menu', (_e, p) => pageMenu(s.id, wc, p).popup({ window: win }));
 
   views[s.id] = view;
   loadedAt[s.id] = Date.now();
@@ -987,6 +990,71 @@ function toggleMute(id) {
   updateTray();
   sendState();
   writeState();
+}
+
+// Right-click inside a service view. Electron shows no menu of its own, so links, images,
+// selections and text fields get the browser basics here. "New tab" means the OS browser.
+function pageMenu(id, wc, p) {
+  const items = [];
+  const sep = () => items.length && items.push({ type: 'separator' });
+  if (p.linkURL) {
+    items.push(
+      { label: 'Open link in browser', click: () => openExternalSafe(p.linkURL) },
+      {
+        label: 'Copy link address',
+        click: () => clipboard.writeText(redirectTarget(p.linkURL) || p.linkURL),
+      },
+    );
+  }
+  // blob:/data: sources can't be opened outside the page, and a data: URL can be megabytes.
+  const src = /^https?:/i.test(p.srcURL) ? p.srcURL : '';
+  if (p.mediaType === 'image' && src) {
+    sep();
+    items.push(
+      { label: 'Open image in browser', click: () => openExternalSafe(src) },
+      { label: 'Copy image', click: () => wc.copyImageAt(p.x, p.y) },
+      { label: 'Copy image address', click: () => clipboard.writeText(src) },
+      { label: 'Save image as…', click: () => wc.downloadURL(src) },
+    );
+  } else if (['video', 'audio'].includes(p.mediaType) && src) {
+    sep();
+    items.push(
+      { label: `Open ${p.mediaType} in browser`, click: () => openExternalSafe(src) },
+      { label: `Copy ${p.mediaType} address`, click: () => clipboard.writeText(src) },
+    );
+  }
+  if (p.isEditable) {
+    sep();
+    items.push(
+      { role: 'undo', enabled: p.editFlags.canUndo },
+      { role: 'redo', enabled: p.editFlags.canRedo },
+      { type: 'separator' },
+      { role: 'cut', enabled: p.editFlags.canCut },
+      { role: 'copy', enabled: p.editFlags.canCopy },
+      { role: 'paste', enabled: p.editFlags.canPaste },
+      { role: 'selectAll' },
+    );
+  } else if (p.selectionText.trim()) {
+    sep();
+    items.push({ role: 'copy' });
+  }
+  sep();
+  items.push(
+    {
+      label: 'Back',
+      enabled: wc.navigationHistory.canGoBack(),
+      click: () => wc.navigationHistory.goBack(),
+    },
+    {
+      label: 'Reload',
+      click: () => {
+        holdZero(id);
+        wc.reload();
+      },
+    },
+    { label: 'Open page in browser', click: () => openExternalSafe(wc.getURL()) },
+  );
+  return Menu.buildFromTemplate(items);
 }
 
 // Right-click on a sidebar icon. The id has already been checked against SERVICES.
