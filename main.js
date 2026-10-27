@@ -820,7 +820,7 @@ function createServiceView(s) {
     console.warn(`earshot: blocked an off-service redirect in ${s.id}`);
   });
 
-  wc.on('context-menu', (_e, p) => pageMenu(s.id, wc, p).popup());
+  wc.on('context-menu', (_e, p) => pageMenu(s.id, wc, p).popup({ window: win }));
 
   views[s.id] = view;
   loadedAt[s.id] = Date.now();
@@ -1006,19 +1006,21 @@ function pageMenu(id, wc, p) {
       },
     );
   }
-  if (p.mediaType === 'image' && p.srcURL) {
+  // blob:/data: sources can't be opened outside the page, and a data: URL can be megabytes.
+  const src = /^https?:/i.test(p.srcURL) ? p.srcURL : '';
+  if (p.mediaType === 'image' && src) {
     sep();
     items.push(
-      { label: 'Open image in browser', click: () => openExternalSafe(p.srcURL) },
+      { label: 'Open image in browser', click: () => openExternalSafe(src) },
       { label: 'Copy image', click: () => wc.copyImageAt(p.x, p.y) },
-      { label: 'Copy image address', click: () => clipboard.writeText(p.srcURL) },
-      { label: 'Save image as…', click: () => wc.downloadURL(p.srcURL) },
+      { label: 'Copy image address', click: () => clipboard.writeText(src) },
+      { label: 'Save image as…', click: () => wc.downloadURL(src) },
     );
-  } else if (['video', 'audio'].includes(p.mediaType) && p.srcURL) {
+  } else if (['video', 'audio'].includes(p.mediaType) && src) {
     sep();
     items.push(
-      { label: `Open ${p.mediaType} in browser`, click: () => openExternalSafe(p.srcURL) },
-      { label: `Copy ${p.mediaType} address`, click: () => clipboard.writeText(p.srcURL) },
+      { label: `Open ${p.mediaType} in browser`, click: () => openExternalSafe(src) },
+      { label: `Copy ${p.mediaType} address`, click: () => clipboard.writeText(src) },
     );
   }
   if (p.isEditable) {
