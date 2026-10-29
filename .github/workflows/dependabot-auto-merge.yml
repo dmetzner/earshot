@@ -13,7 +13,7 @@ name: Dependabot auto-merge
 # its result is ignored when deciding to merge.
 on:
   workflow_run:
-    workflows: ['CI']
+    workflows: ["CI"]
     types: [completed]
 
 permissions:
