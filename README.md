@@ -87,8 +87,8 @@ npm start
 
 ## Running for weeks
 
-Earshot keeps eight chat SPAs loaded at all times — that is what makes the counts live,
-and it is not free. Measured six hours after a cold start: 4.0 GB resident, the five heavy
+Earshot keeps every chat SPA you add loaded (unless you pause it) — that is what makes the
+counts live, and it is not free. Measured with eight services, six hours after a cold start: 4.0 GB resident, the five heavy
 services 350–650 MB each, and 1.5 GB in the userData directory (840 MB of it HTTP cache).
 Neither number is one you should have to go and reset by hand, so Earshot does it while the
 window is put away — after 30 minutes hidden, once every 5 minutes:
