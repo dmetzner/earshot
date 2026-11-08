@@ -46,6 +46,8 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
     tray, the dock badge and the exported `total`.
   - **Reload**, **Open in browser** (its current page, http/https only), **High priority**
     (the same toggle as the tray menu), **Edit services…**
+- **Right-click the tray/menubar icon → Reload all services** reloads every running
+  service at once (paused ones stay paused). Drops unsent text, like any reload.
 - **Config UI** — add / edit / remove services from a Settings window. No code editing.
 - **Login stays in-app**, including Google sign-in (loaded in-view, not a popup).
 - **Who messaged you**, not just how many — an optional per-service `sendersJs` extracts
