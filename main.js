@@ -1300,6 +1300,17 @@ app.whenReady().then(() => {
           views[activeId]?.webContents.reload();
         },
       },
+      {
+        label: 'Reload all services',
+        click: () => {
+          // Paused services have no view and stay paused.
+          for (const [id, v] of Object.entries(views)) {
+            if (v.webContents.isDestroyed()) continue;
+            holdZero(id);
+            v.webContents.reload();
+          }
+        },
+      },
       { label: 'Quit', click: () => app.quit() }, // before-quit sets the flag
     ]);
     tray.popUpContextMenu(menu);
