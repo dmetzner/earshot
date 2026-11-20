@@ -8,5 +8,7 @@ contextBridge.exposeInMainWorld('hub', {
   back: () => ipcRenderer.send('back'),
   forward: () => ipcRenderer.send('forward'),
   home: () => ipcRenderer.send('home'),
+  appMenu: () => ipcRenderer.send('app-menu'),
+  modeNext: () => ipcRenderer.send('mode-next'),
   onState: (cb) => ipcRenderer.on('state', (_e, data) => cb(data)),
 });

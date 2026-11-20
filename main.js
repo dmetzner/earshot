@@ -1,5 +1,6 @@
 const {
   app,
+  BaseWindow,
   BrowserWindow,
   WebContentsView,
   Tray,
@@ -9,9 +10,11 @@ const {
   ipcMain,
   clipboard,
   session,
+  globalShortcut,
+  desktopCapturer,
 } = require('electron');
 const path = require('node:path');
-const { baseDomain, classifyNav, classifyPopup, redirectTarget } = require('./nav');
+const { baseDomain, classifyNav, classifyPopup, isMeetingUrl, redirectTarget } = require('./nav');
 const fs = require('node:fs');
 
 const CHROME_MAJOR = '140';
@@ -38,7 +41,7 @@ const CLIENT_HINTS = {
   'sec-ch-ua-wow64': '?0',
 };
 
-const SIDEBAR_W = 72;
+const SIDEBAR_W = 56;
 
 // Google Chat doesn't use the Badging API or a title count — it puts the unread
 // total in aria-labels ("2 ungelesene Nachrichten" / "2 unread messages"). The
@@ -120,11 +123,30 @@ const BADGE_HOOK_JS = `(() => {
       value: () => { window.__earshotBadge = 0; return Promise.resolve(); },
     });
   } catch (_e) {}
+  // A click on the page's own desktop notification only focuses the page, and the page
+  // sits in a hidden window. Say so on the console; main listens for exactly this line.
+  // Covers \`new Notification\`, not service-worker showNotification.
+  try {
+    const N = window.Notification;
+    if (N) {
+      const Hooked = function (title, opts) {
+        // Hidden by Earshot's mode (work/private): no banner, a stand-in the page can use.
+        if (window.__earshotQuiet) return { addEventListener() {}, removeEventListener() {}, close() {} };
+        const n = new N(title, opts);
+        n.addEventListener('click', () => console.debug('__earshot:open'));
+        return n;
+      };
+      Hooked.prototype = N.prototype;
+      Object.defineProperty(Hooked, 'permission', { get: () => N.permission });
+      Hooked.requestPermission = N.requestPermission.bind(N);
+      window.Notification = Hooked;
+    }
+  } catch (_e) {}
 })()`;
 
 // Seed config — written to services.json on first run, then managed via the Settings
 // window. prio 'high' → red menubar alert; 'low' → shown quietly. Each gets its own session.
-// `group` is not about this app at all: it is a free label (`work` / `private`) carried
+// `group` (`work` / `private` / `both`) picks which mode shows a service, and is also carried
 // through to the exported state file, so an external dashboard can scope a row without
 // keeping a second copy of this list.
 const DEFAULT_SERVICES = [
@@ -225,8 +247,9 @@ function normalizeServices(list) {
         url: String(s.url).trim(),
         emoji: String(s.emoji || '•').trim() || '•',
         prio: s.prio === 'high' ? 'high' : 'low',
-        group: s.group === 'work' ? 'work' : 'private',
+        group: ['work', 'both'].includes(s.group) ? s.group : 'private',
       };
+      if (s.onDemand) out.onDemand = true;
       if (s.unreadJs) out.unreadJs = s.unreadJs;
       if (s.sendersJs) out.sendersJs = s.sendersJs;
       return out;
@@ -353,7 +376,54 @@ function saveIdSet(name, set) {
   } catch {}
 }
 // What reaches the tray, the dock badge and the exported total.
-const counted = (id) => !paused.has(id) && !muted.has(id);
+const counted = (id) => !paused.has(id) && !muted.has(id) && !hiddenByMode(id);
+
+// ---- mode: all / work / private ----
+// 'work' hides the private services and 'private' the work ones: out of the sidebar, the
+// menu bar, the counts and their desktop notifications, so a shared screen shows nothing
+// from the other side. They keep running; switching back is instant.
+const MODES = { all: 'All', work: 'Work only', private: 'Private only' };
+let mode = 'all';
+const modePath = () => path.join(app.getPath('userData'), 'mode.json');
+function hiddenByMode(id) {
+  if (mode === 'all') return false;
+  const s = SERVICES.find((x) => x.id === id);
+  return !!s && s.group !== mode && s.group !== 'both'; // 'both': shown in every mode
+}
+const shownServices = () => orderedServices().filter((s) => !hiddenByMode(s.id));
+function loadMode() {
+  try {
+    const m = JSON.parse(fs.readFileSync(modePath(), 'utf8'));
+    if (Object.hasOwn(MODES, m)) mode = m;
+  } catch {}
+}
+function setMode(m) {
+  if (!Object.hasOwn(MODES, m)) return;
+  mode = m;
+  try {
+    fs.writeFileSync(modePath(), JSON.stringify(m));
+  } catch {}
+  for (const [id, v] of Object.entries(views)) quietNotifications(id, v.webContents);
+  if (hiddenByMode(activeId)) {
+    const next = shownServices().find((s) => views[s.id]);
+    if (next) switchTo(next.id);
+  }
+  updateTray();
+  sendState();
+  writeState();
+}
+// Tells the page hook (BADGE_HOOK_JS) whether this service's notifications are hidden.
+function quietNotifications(id, wc) {
+  if (!wc.isDestroyed())
+    wc.executeJavaScript(`window.__earshotQuiet = ${hiddenByMode(id)}`).catch(() => {});
+}
+const modeMenu = () =>
+  Object.entries(MODES).map(([m, label]) => ({
+    label,
+    type: 'radio',
+    checked: mode === m,
+    click: () => setMode(m),
+  }));
 
 // ---- single instance ----
 if (!app.requestSingleInstanceLock()) {
@@ -364,11 +434,15 @@ if (!app.requestSingleInstanceLock()) {
   // and the only such path on Windows, which has no open-url event at all — a link that
   // starts the app cold is picked out of our own argv in whenReady instead.
   app.on('second-instance', (_e, argv) => {
-    const link = argv.find((x) => typeof x === 'string' && x.startsWith('earshot://'));
+    const link = argv.find(
+      (x) => typeof x === 'string' && (x.startsWith('earshot://') || isMeetingUrl(x)),
+    );
     if (link) handleDeepLink(link);
     else showWindow();
   });
 }
+// Clicking the pinned Dock icon of the running app: the window may be hidden, so show it.
+app.on('activate', () => showWindow(mostUrgent()));
 app.on('open-url', (e, url) => {
   e.preventDefault();
   handleDeepLink(url);
@@ -389,6 +463,94 @@ function openExternalSafe(url) {
     const { protocol } = new URL(target);
     if (protocol === 'http:' || protocol === 'https:') shell.openExternal(target);
   } catch {}
+}
+
+// Where a link leaving a service goes: a Meet room opens in Earshot, the rest in the browser.
+function leave(url, from) {
+  const target = redirectTarget(url) || url;
+  if (isMeetingUrl(target)) openMeeting(target, from);
+  else openExternalSafe(url);
+}
+
+// ---- meetings: a temporary sidebar entry ----
+// It borrows the session of the service the link came from, so the meeting runs as the
+// Google account that is signed in there. Never saved to services.json; right-click →
+// Close meeting removes it.
+// ponytail: one meeting slot; a second link replaces the first. Add ids per room if two
+// meetings at once is ever real.
+const MEET_ID = 'meeting';
+function openMeeting(url, from) {
+  let s = SERVICES.find((x) => x.id === MEET_ID);
+  if (s) {
+    views[MEET_ID]?.webContents.loadURL(url);
+  } else {
+    s = {
+      id: MEET_ID,
+      name: 'Meeting',
+      url,
+      emoji: '🎥',
+      prio: 'low',
+      group: 'both', // a call you are in never vanishes with a mode switch
+      temp: true,
+      partition: from.partition || `persist:${from.id}`,
+    };
+    SERVICES.push(s);
+    order.push(MEET_ID);
+    allowScreenShare(session.fromPartition(s.partition));
+    createServiceView(s);
+  }
+  showWindow(MEET_ID);
+}
+// Whose Google session an outside meeting link joins with: the first work service on
+// google.com (Google Chat), else any Google service, else the first service.
+function meetingAccount() {
+  const google = SERVICES.filter(
+    (s) => !s.temp && /(^|\.)google\.com$/.test(new URL(s.url).hostname),
+  );
+  return google.find((s) => s.group === 'work') || google[0] || SERVICES[0];
+}
+function closeMeeting() {
+  const view = views[MEET_ID];
+  if (activeId === MEET_ID) {
+    const back =
+      views[lastId] && lastId !== MEET_ID
+        ? lastId
+        : order.find((id) => id !== MEET_ID && views[id]);
+    if (back)
+      switchTo(back); // detaches the meeting view
+    else if (view) win.contentView.removeChildView(view);
+  }
+  delete views[MEET_ID];
+  view?.webContents.close();
+  SERVICES = SERVICES.filter((x) => x.id !== MEET_ID);
+  order = order.filter((id) => id !== MEET_ID);
+  clearTimeout(pollTimer[MEET_ID]);
+  for (const o of [unread, unreadTitle, unreadBadge, unreadDom]) delete o[MEET_ID];
+  updateTray();
+  sendState();
+}
+// getDisplayMedia (Meet's "Present now") fails outright without a handler. macOS 15+
+// shows its own screen/window picker. The handler sits on a BORROWED session (Chat's),
+// so it answers Meet frames only: anything else in that session is refused instead of
+// getting the main screen without a prompt where the system picker does not exist.
+const screenShareReady = new WeakSet();
+function allowScreenShare(ses) {
+  if (screenShareReady.has(ses)) return;
+  screenShareReady.add(ses);
+  ses.setDisplayMediaRequestHandler(
+    (req, cb) => {
+      let host = '';
+      try {
+        host = new URL(req.frame?.url || '').hostname;
+      } catch {}
+      if (host !== 'meet.google.com') return cb({});
+      desktopCapturer
+        .getSources({ types: ['screen'] })
+        .then(([screen]) => cb(screen ? { video: screen } : {}))
+        .catch(() => cb({}));
+    },
+    { useSystemPicker: true },
+  );
 }
 
 function totalUnread() {
@@ -430,7 +592,11 @@ function sanitizeSenders(list) {
 function writeState() {
   const payload = {
     at: new Date().toISOString(),
-    total: totalUnread(),
+    total: SERVICES.reduce(
+      // all modes: a dashboard's total must match its rows
+      (a, x) => a + (!paused.has(x.id) && !muted.has(x.id) ? unread[x.id] || 0 : 0),
+      0,
+    ),
     services: orderedServices()
       .filter(Boolean)
       .map((s) => ({
@@ -459,7 +625,15 @@ function writeState() {
 // services we actually built views for and nothing else — in particular there is
 // deliberately NO url parameter: any process on this machine can open a URL scheme, and
 // "load this address in one of my logged-in sessions" is not a knob to hand out.
+// The one exception is a Meet room (isMeetingUrl, exact host and code shape): it opens on
+// Meet's own pre-join screen, so nothing is joined or shared without a click here.
 function handleDeepLink(raw) {
+  // A Meet link handed to the app from outside (MeetingBar, `open -a Earshot <url>`).
+  // Before startup has built the window, wait for it: whenReady's first handler builds it.
+  if (isMeetingUrl(raw)) {
+    app.whenReady().then(() => openMeeting(raw, meetingAccount()));
+    return;
+  }
   let u;
   try {
     u = new URL(raw);
@@ -483,27 +657,37 @@ function handleDeepLink(raw) {
 function sendState() {
   if (!sidebar) return;
   sidebar.webContents.send('state', {
-    services: orderedServices().map((s) => ({
+    mode,
+    services: shownServices().map((s) => ({
       id: s.id,
       name: s.name,
+      emoji: s.emoji,
       icon: icons[s.id] || null,
       unread: unread[s.id] || 0,
       paused: paused.has(s.id),
       muted: muted.has(s.id),
+      work: s.group === 'work',
     })),
     activeId,
   });
 }
 
 // ---- the indicator ---------------------------------------------------------
-// On macOS the whole indicator is menubar TEXT: an empty image plus `tray.setTitle()`,
-// which is why the Tray below is built from nativeImage.createEmpty(). Neither half of
-// that survives the trip to Windows. `setTitle` still exists on the object there — it is
+// On macOS the indicator is a template glyph of the app icon (a dot added while anything
+// is unread) plus one TEXT item per app with unread (`setTitle` on an empty image, see
+// updateAppTrays). Neither survives the trip to Windows. `setTitle` still exists there — it is
 // a macOS-only API that silently does nothing — and a tray built from an empty image is
 // a slot in the notification area with nothing in it: invisible, so the counts are gone
 // AND so is the only way left to open the window. The three facts the title carried
 // (something / urgent / how many) therefore have to be painted.
 const WINDOWS = process.platform === 'win32';
+// "Template" in the name makes macOS tint it for light/dark bars; the @2x file is picked up.
+const glyphs = {};
+const trayGlyph = (dot) => {
+  const f = dot ? 'trayDotTemplate.png' : 'trayTemplate.png';
+  glyphs[f] ??= nativeImage.createFromPath(path.join(__dirname, 'assets', f)); // read once
+  return glyphs[f];
+};
 
 // 5×7 pixel digits, drawn at whatever size the display asks for (see runs()). A tray
 // image has no text API, and a font would be a dependency and a licence for eleven
@@ -652,26 +836,56 @@ function fitTooltip(lines) {
   return `${kept.join('\n')}\n+${lines.length - kept.length} more`;
 }
 
+// macOS: one menu bar item per service with unread, so a click opens exactly that service
+// (one item's text cannot tell which part of it was clicked). The main item, the app-icon
+// glyph, is always there; any item's right-click opens the same menu.
+const appTrays = {}; // id -> Tray
+let trayMenu = () => null; // the right-click menu, built in whenReady; every item shares it
+let trayIds = ''; // which services have an item now, in order
+function updateAppTrays() {
+  const want = shownServices().filter((s) => counted(s.id) && unread[s.id] > 0);
+  const ids = want.map((s) => s.id).join();
+  if (ids !== trayIds) {
+    // macOS puts every NEW status item leftmost, so items added one by one end up scattered
+    // among other apps' icons. Whenever the set changes, rebuild the whole group: the
+    // Earshot glyph first, then the apps right to left, so they sit together in sidebar
+    // order directly left of the glyph. Count changes alone only retitle.
+    for (const t of Object.values(appTrays)) t.destroy();
+    for (const id of Object.keys(appTrays)) delete appTrays[id];
+    if (want.length) makeMainTray();
+    for (const s of [...want].reverse()) {
+      appTrays[s.id] = new Tray(nativeImage.createEmpty());
+      appTrays[s.id].on('click', () => showWindow(s.id));
+      appTrays[s.id].on('right-click', () => appTrays[s.id]?.popUpContextMenu(trayMenu()));
+    }
+    trayIds = ids;
+  }
+  for (const s of want) {
+    const n = unread[s.id];
+    appTrays[s.id].setTitle(`${s.emoji}${n}`);
+    const who = senders[s.id]?.length ? ` — ${senders[s.id].join(', ')}` : '';
+    appTrays[s.id].setToolTip(`${s.name}: ${n}${who}`);
+  }
+}
+
+// The Earshot item itself. Also rebuilt by updateAppTrays to keep the group together.
+function makeMainTray() {
+  tray?.destroy();
+  tray = new Tray(WINDOWS ? trayIcon(false, false, 0) : trayGlyph(false));
+  tray.on('click', toggleWindow);
+  tray.on('right-click', () => tray.popUpContextMenu(trayMenu()));
+}
+
 function updateTray() {
   if (!tray) return;
-  const unreadServices = orderedServices().filter((s) => counted(s.id) && unread[s.id] > 0);
+  const unreadServices = shownServices().filter((s) => counted(s.id) && unread[s.id] > 0);
   const high = unreadServices.filter((s) => prio[s.id] === 'high');
   const low = unreadServices.filter((s) => prio[s.id] === 'low');
-  const fmt = (arr) => arr.map((s) => `${s.emoji}${unread[s.id]}`).join(' ');
-
-  let title;
-  if (unreadServices.length === 0) {
-    title = '💬'; // calm idle — always visible
-  } else {
-    // Per-app icon + count says where & how many; high-priority apps come first,
-    // low-priority sit after a "·" separator. No always-on red (it never turns off).
-    const parts = [];
-    if (high.length) parts.push(fmt(high));
-    if (low.length) parts.push(`${high.length ? '· ' : ''}${fmt(low)}`);
-    title = parts.join('  ');
-  }
   if (WINDOWS) tray.setImage(trayIcon(high.length > 0, low.length > 0, totalUnread()));
-  else tray.setTitle(title);
+  else {
+    updateAppTrays(); // may rebuild the main item, so the image comes after
+    tray.setImage(trayGlyph(unreadServices.length > 0));
+  }
 
   // Named in the calm state: on Windows this tooltip is the only per-service breakdown
   // there is, hanging off an icon in a row of fifteen others.
@@ -706,7 +920,7 @@ function recompute(id) {
 function createServiceView(s) {
   const view = new WebContentsView({
     webPreferences: {
-      partition: `persist:${s.id}`,
+      partition: s.partition || `persist:${s.id}`,
       backgroundThrottling: false, // keep unread counts live while in the background
       contextIsolation: true, // isolate the preload world from the untrusted page
       sandbox: true, // run the remote page in a sandboxed renderer
@@ -715,6 +929,7 @@ function createServiceView(s) {
     },
   });
   const wc = view.webContents;
+  handleKeys(wc);
   const serviceBase = baseDomain(new URL(s.url).hostname);
 
   wc.setUserAgent(CHROME_UA);
@@ -746,6 +961,21 @@ function createServiceView(s) {
   });
   wc.on('dom-ready', () => {
     wc.executeJavaScript(BADGE_HOOK_JS).catch(() => {});
+    if (zoom[s.id]) wc.setZoomLevel(zoom[s.id]); // Chromium forgets it across restarts
+    quietNotifications(s.id, wc);
+  });
+  wc.on('found-in-page', (_e, r) =>
+    findView?.webContents.send('found', r.activeMatchOrdinal, r.matches),
+  );
+  // The notification-click line from BADGE_HOOK_JS. Main frame only (an embedded iframe
+  // must not summon the window), and at most every 2 s: showing the window takes keyboard
+  // focus, so a page logging the line in a loop would otherwise steal what you type.
+  let openedAt = 0;
+  wc.on('console-message', (e, _level, legacyMessage) => {
+    if ((e.message ?? legacyMessage) !== '__earshot:open' || views[s.id] !== view) return;
+    if ((e.frame && e.frame !== wc.mainFrame) || Date.now() - openedAt < 2000) return;
+    openedAt = Date.now();
+    showWindow(s.id);
   });
   const poll = async () => {
     if (views[s.id] !== view) return; // this view was recycled; its successor polls itself
@@ -794,10 +1024,30 @@ function createServiceView(s) {
   // Popups: sign-in targets load in THIS view; every other http/https link goes to the
   // real browser; everything else (bad scheme/URL) is dropped.
   wc.setWindowOpenHandler(({ url }) => {
+    // "Open in new window" (Google Chat's Meet button among them) often opens about:blank
+    // and sets the address afterwards. Let that blank window exist, hidden, just long
+    // enough to learn where it goes; did-create-window below routes it and closes it.
+    if (!url || url === 'about:blank')
+      return { action: 'allow', overrideBrowserWindowOptions: { show: false } };
     const decision = classifyPopup(url);
     if (decision === 'in-view') wc.loadURL(url);
-    else if (decision === 'external') openExternalSafe(url);
+    else if (decision === 'external') leave(url, s);
     return { action: 'deny' };
+  });
+
+  wc.on('did-create-window', (child) => {
+    const route = (u) => {
+      if (!u || u === 'about:blank' || child.isDestroyed()) return;
+      child.destroy(); // before it loads anything: the target goes where any link would
+      leave(u, s);
+    };
+    child.webContents.on('will-navigate', (e, u) => {
+      e.preventDefault();
+      route(u);
+    });
+    child.webContents.on('did-start-navigation', (d) => d.isMainFrame && route(d.url));
+    child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    setTimeout(() => child.isDestroyed() || child.destroy(), 15000); // never went anywhere
   });
 
   // Top-level self-navigation gets the same gate: only login + same-service hosts
@@ -806,7 +1056,7 @@ function createServiceView(s) {
   wc.on('will-navigate', (e, url) => {
     if (classifyNav(url, serviceBase) === 'in-view') return;
     e.preventDefault();
-    openExternalSafe(url);
+    leave(url, s);
   });
   // Server-side redirects need the gate too: will-navigate never sees a 302, nor anything
   // started by loadURL (the window-open handler above), so an allowed host that
@@ -857,7 +1107,7 @@ const RELOAD_GRACE_MS = 45000;
 const POLL_MS = 4000; // how often each view's badge global + DOM extractor is read
 const IDLE_POLL_MS = 15000; // ...and how often once the window has been put away
 
-let hiddenSince = Date.now();
+let awaySince = Date.now();
 let lastSweep = 0;
 let maintainTimer = null;
 const loadedAt = {}; // id -> ms, when its document last finished loading
@@ -870,6 +1120,7 @@ const pollTimer = {}; // id -> the pending backstop poll, so a quit can cancel i
 
 async function sweepCaches() {
   for (const s of SERVICES) {
+    if (s.temp) continue; // a meeting borrows another service's session
     const ses = session.fromPartition(`persist:${s.id}`);
     // The caches and nothing else: a bare clearStorageData would take the cookies, the
     // IndexedDB and the service workers with it — the logins, and the apps' own stores.
@@ -896,7 +1147,7 @@ function recycleOneView() {
   for (const m of app.getAppMetrics()) rss[m.pid] = m.memory.workingSetSize; // KB
   const memOf = (s) => rss[views[s.id]?.webContents.getOSProcessId()] || 0;
   const age = (s) => now - (loadedAt[s.id] || now);
-  const others = SERVICES.filter((s) => s.id !== activeId && views[s.id]);
+  const others = SERVICES.filter((s) => s.id !== activeId && views[s.id] && !s.temp);
   const next =
     others
       .filter((s) => memOf(s) > RECYCLE_ABOVE_KB && age(s) > IDLE_MS)
@@ -915,12 +1166,15 @@ function recycleOneView() {
   old.webContents.close();
 }
 
-// Put away: hidden, and hidden long enough that this is not just a glance elsewhere.
+// Put away: hidden or left unfocused behind other windows, long enough that this is not
+// just a glance elsewhere. Unfocused counts too (audit #2): a window left open was
+// otherwise never maintained at all.
 function isAway() {
-  return !!win && !win.isVisible() && Date.now() - hiddenSince >= IDLE_MS;
+  return !!win && !(win.isVisible() && win.isFocused()) && Date.now() - awaySince >= IDLE_MS;
 }
 
 function maintain() {
+  unloadIdleOnDemand();
   if (!isAway()) return;
   if (Date.now() - lastSweep > SWEEP_EVERY_MS) {
     lastSweep = Date.now();
@@ -935,16 +1189,124 @@ function layout() {
   if (sidebar) sidebar.setBounds({ x: 0, y: 0, width: SIDEBAR_W, height });
   const v = views[activeId];
   if (v) v.setBounds({ x: SIDEBAR_W, y: 0, width: width - SIDEBAR_W, height });
+  if (findView) findView.setBounds({ x: width - 340, y: 8, width: 330, height: 44 });
+}
+
+// ⌘1–8 (Ctrl on Windows) jumps to that sidebar slot and ⌘9 to the last, like browser tabs;
+// Ctrl+Tab goes back to the previous chat; ⌘F finds, ⌘+/−/0 zoom, ⌘W hides.
+// Not Alt+digit: on German layouts that is how { [ ] } are typed.
+function handleKeys(wc) {
+  wc.on('before-input-event', (e, input) => {
+    if (input.type !== 'keyDown') return;
+    const list = shownServices();
+    const mod = WINDOWS ? input.control : input.meta;
+    const plain = mod && !input.alt;
+    const key = input.key.toLowerCase();
+    if (plain && !input.shift && key === 'w') {
+      e.preventDefault(); // close = hide, as the window's close button already does
+      win.hide();
+      return;
+    }
+    if (plain && key === 'f') {
+      e.preventDefault();
+      openFind();
+      return;
+    }
+    // Zoom: + is its own key on German layouts, = carries it on US ones.
+    const zoomBy = { '+': 0.5, '=': 0.5, '-': -0.5 }[input.key];
+    if (plain && (zoomBy || input.key === '0')) {
+      e.preventDefault();
+      setZoom(activeId, zoomBy ? (zoom[activeId] || 0) + zoomBy : 0);
+      return;
+    }
+    if (plain && !input.shift && /^[1-9]$/.test(input.key)) {
+      const n = Number(input.key);
+      const target = n === 9 ? list.at(-1) : list[n - 1];
+      if (!target) return;
+      e.preventDefault();
+      switchTo(target.id);
+    } else if (
+      input.control &&
+      input.key === 'Tab' &&
+      lastId &&
+      SERVICES.some((x) => x.id === lastId) &&
+      !hiddenByMode(lastId)
+    ) {
+      e.preventDefault(); // back to the chat you were in before, like Alt+Tab
+      switchTo(lastId);
+    }
+  });
 }
 
 function switchTo(id) {
   if (paused.has(id)) resumeService(id); // clicking a paused service is how you get it back
   if (id === activeId && views[id]) return;
   if (views[activeId]) win.contentView.removeChildView(views[activeId]);
+  closeFind();
+  lastId = activeId;
+  leftAt[activeId] = Date.now();
   activeId = id;
   win.contentView.addChildView(views[id]);
   layout();
   sendState();
+}
+
+// On-demand services (a dashboard, no unread to watch) start unloaded, load when opened
+// and unload ON_DEMAND_MS after you leave them. Unloading is pausing, so a click resumes.
+const ON_DEMAND_MS = 10 * 60 * 1000;
+const leftAt = {}; // id -> ms, when it stopped being the open service
+let lastId = null; // the service open before this one, for Ctrl+Tab
+function unloadIdleOnDemand() {
+  for (const s of SERVICES) {
+    if (
+      s.onDemand &&
+      s.id !== activeId &&
+      views[s.id] &&
+      Date.now() - (leftAt[s.id] || 0) > ON_DEMAND_MS
+    )
+      pauseService(s.id);
+  }
+}
+
+// ---- zoom, remembered per service ----
+const zoom = {}; // id -> Chromium zoom level, 0 = 100 %
+const zoomPath = () => path.join(app.getPath('userData'), 'zoom.json');
+function loadZoom() {
+  try {
+    Object.assign(zoom, JSON.parse(fs.readFileSync(zoomPath(), 'utf8')));
+  } catch {}
+}
+function setZoom(id, level) {
+  const wc = views[id]?.webContents;
+  if (!wc) return;
+  zoom[id] = Math.max(-3, Math.min(3, level));
+  wc.setZoomLevel(zoom[id]);
+  try {
+    fs.writeFileSync(zoomPath(), JSON.stringify(zoom));
+  } catch {}
+}
+
+// ---- find in page: a small bar over the top-right of the open service ----
+let findView = null;
+let findText = ''; // the last query, so Enter on the same text continues it
+function openFind() {
+  if (!findView) {
+    findView = new WebContentsView({
+      webPreferences: { preload: path.join(__dirname, 'find-preload.js') },
+    });
+    findView.webContents.loadFile(path.join(__dirname, 'find.html'));
+  }
+  win.contentView.addChildView(findView); // (re)adding puts it on top
+  layout();
+  findView.webContents.focus();
+  findView.webContents.send('find-open');
+}
+function closeFind() {
+  if (!findView || !win.contentView.children.includes(findView)) return;
+  views[activeId]?.webContents.stopFindInPage('clearSelection');
+  findText = '';
+  win.contentView.removeChildView(findView);
+  views[activeId]?.webContents.focus();
 }
 
 // Pause = the recycle path in recycleOneView without the successor: close() is what frees
@@ -1061,6 +1423,11 @@ function pageMenu(id, wc, p) {
 function serviceMenu(s) {
   const live = () => views[s.id]?.webContents; // looked up on click: the view may be replaced
   const isPaused = paused.has(s.id);
+  if (s.temp)
+    return Menu.buildFromTemplate([
+      { label: 'Close meeting', click: closeMeeting },
+      { label: 'Open in browser', click: () => openExternalSafe(live()?.getURL() || s.url) },
+    ]);
   return Menu.buildFromTemplate([
     {
       label: isPaused ? 'Resume' : 'Pause (free its memory)',
@@ -1092,10 +1459,14 @@ function serviceMenu(s) {
   ]);
 }
 
-function showWindow() {
+function showWindow(id) {
   if (!win) return;
+  if (id && id !== activeId && views[id]) switchTo(id);
   win.maximize(); // fill the screen's work area (not macOS fullscreen)
   win.show();
+  // A Dock-less app is not activated by showing its window: without this the keyboard
+  // stays with the app you came from, so Alt+Space, ⌘F and typing would all miss.
+  if (!WINDOWS) app.focus({ steal: true });
   win.focus();
 }
 
@@ -1117,14 +1488,23 @@ function openSettings() {
     settingsWin = null;
   });
 }
+// Where opening the window should land: the open service if it has unread, else the
+// first with unread in sidebar order, high priority before low; else stay put.
+function mostUrgent() {
+  if (unread[activeId] > 0 && counted(activeId)) return activeId;
+  const waiting = shownServices().filter((s) => counted(s.id) && unread[s.id] > 0);
+  return (waiting.find((s) => prio[s.id] === 'high') || waiting[0])?.id;
+}
 function toggleWindow() {
   if (!win) return;
   if (win.isVisible() && win.isFocused()) win.hide();
-  else showWindow();
+  else showWindow(mostUrgent());
 }
 
 function createWindow() {
-  win = new BrowserWindow({
+  // BaseWindow: everything visible lives in child views, so the BrowserWindow's own
+  // renderer was an empty page costing a process (~21 MB, docs/windows-perf-audit.md #3).
+  win = new BaseWindow({
     width: 1200,
     height: 820,
     show: false,
@@ -1138,6 +1518,7 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   sidebar.webContents.loadFile(path.join(__dirname, 'sidebar.html'));
+  handleKeys(sidebar.webContents);
   win.contentView.addChildView(sidebar);
 
   // All services load up front (in the background) so unread counts stay live;
@@ -1148,9 +1529,11 @@ function createWindow() {
 
   sidebar.webContents.on('did-finish-load', sendState);
   win.on('resize', layout);
-  win.on('hide', () => {
-    hiddenSince = Date.now();
-  });
+  for (const ev of ['hide', 'blur', 'minimize']) {
+    win.on(ev, () => {
+      awaySince = Date.now();
+    });
+  }
   win.on('close', (e) => {
     if (!app.isQuitting) {
       e.preventDefault();
@@ -1170,6 +1553,29 @@ function fromWindow(event, wc) {
 }
 const fromSidebar = (event) => fromWindow(event, sidebar?.webContents);
 const fromSettings = (event) => fromWindow(event, settingsWin?.webContents);
+const fromFind = (event) => fromWindow(event, findView?.webContents);
+
+ipcMain.on('find', (event, text, forward) => {
+  const wc = views[activeId]?.webContents;
+  if (!fromFind(event) || !wc) return;
+  if (!text) {
+    wc.stopFindInPage('clearSelection');
+    findView.webContents.send('found', 0, 0);
+  } else wc.findInPage(String(text), { forward: forward !== false, findNext: text !== findText }); // true = a NEW search
+  findText = text;
+});
+ipcMain.on('find-close', (event) => {
+  if (fromFind(event)) closeFind();
+});
+// The sidebar button steps through the modes: All → Work only → Private only → All.
+ipcMain.on('mode-next', (event) => {
+  if (!fromSidebar(event)) return;
+  const ms = Object.keys(MODES);
+  setMode(ms[(ms.indexOf(mode) + 1) % ms.length]);
+});
+ipcMain.on('app-menu', (event) => {
+  if (fromSidebar(event)) trayMenu()?.popup({ window: win });
+});
 
 ipcMain.handle('get-config', (event) => (fromSettings(event) ? SERVICES : []));
 ipcMain.on('save-config', (event, list) => {
@@ -1187,7 +1593,11 @@ ipcMain.on('service-menu', (event, id) => {
 });
 ipcMain.on('reorder', (event, ids) => {
   if (!fromSidebar(event)) return;
-  order = normalizeOrder(ids);
+  // In Work/Private mode the sidebar only sends what it shows; the hidden services keep
+  // their slots and the shown ones are re-dealt into theirs.
+  const shown = new Set(ids);
+  let i = 0;
+  order = normalizeOrder(order.map((id) => (shown.has(id) ? ids[i++] : id)));
   try {
     fs.writeFileSync(orderPath(), JSON.stringify(order));
   } catch {}
@@ -1254,6 +1664,9 @@ app.whenReady().then(() => {
   loadOrder();
   loadPrio();
   loadIdSet('paused', paused);
+  for (const s of SERVICES) if (s.onDemand && s.id !== activeId) paused.add(s.id);
+  loadZoom();
+  loadMode();
   loadIdSet('muted', muted);
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
   // `earshot://open/<id>` — registered at runtime so a dev run (`npm start`) answers it
@@ -1267,14 +1680,18 @@ app.whenReady().then(() => {
     app.setAsDefaultProtocolClient('earshot');
   }
 
-  // Empty is the whole widget on macOS (the title is the indicator); everywhere else an
-  // empty tray image is an invisible icon. See trayIcon above.
-  tray = new Tray(WINDOWS ? trayIcon(false, false, 0) : nativeImage.createEmpty());
-  updateTray(); // sets title + tooltip
-  tray.on('click', toggleWindow);
-  tray.on('right-click', () => {
+  makeMainTray();
+  updateTray(); // sets image + tooltip
+  // Alt+Space from anywhere does what the tray click does. register() returns false
+  // when another app already owns the chord (ChatGPT's default is the same one).
+  if (!globalShortcut.register('Alt+Space', toggleWindow)) {
+    console.warn('Alt+Space is taken by another app; no global shortcut for Earshot.');
+  }
+  trayMenu = () => {
     const menu = Menu.buildFromTemplate([
-      ...orderedServices().map((s) => ({
+      ...modeMenu(),
+      { type: 'separator' },
+      ...shownServices().map((s) => ({
         label: `${s.name}${paused.has(s.id) ? '  (paused)' : unread[s.id] ? `  (${unread[s.id]})` : ''}`,
         click: () => {
           showWindow();
@@ -1313,8 +1730,8 @@ app.whenReady().then(() => {
       },
       { label: 'Quit', click: () => app.quit() }, // before-quit sets the flag
     ]);
-    tray.popUpContextMenu(menu);
-  });
+    return menu;
+  };
 
   createWindow();
   // The third delivery path, and the only one Windows has when the app was NOT already
@@ -1333,6 +1750,7 @@ app.whenReady().then(() => {
 // A stale unread.json is how a reader knows earshot is gone; make that immediate on a
 // clean quit instead of waiting for the heartbeat to age out.
 app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
   if (stateTimer) clearInterval(stateTimer);
   if (maintainTimer) clearInterval(maintainTimer);
   for (const t of Object.values(pollTimer)) clearTimeout(t);

@@ -209,9 +209,15 @@ fi
 # Sync app code (everything but node_modules + the build artifacts).
 mkdir -p "$APP"
 for f in main.js nav.js preload.js service-preload.js sidebar.html package.json \
-         settings.html settings-preload.js; do
+         settings.html settings-preload.js find.html find-preload.js; do
   cp "$SRC/$f" "$APP/$f"
 done
+# Over Electron's own icon: Info.plist's CFBundleIconFile already names electron.icns.
+# Every build, not only on a runtime copy, so a changed icon lands without one.
+mkdir -p "$APP/assets"
+cp "$SRC"/assets/tray*.png "$APP/assets/"
+cp "$SRC/assets/icon.icns" "$DEST/Contents/Resources/electron.icns"
+touch "$DEST" # Finder/Dock re-read the icon of a bundle whose mtime changed
 
 codesign --force --deep --sign - "$DEST" >/dev/null 2>&1
 echo "Built $DEST (Electron $SRC_VER)"
