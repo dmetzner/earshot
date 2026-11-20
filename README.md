@@ -41,7 +41,8 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
   in the page, ⌘+ / ⌘− / ⌘0 zoom (remembered per service), ⌘W hides.
 - **Work / private:** work services carry a blue briefcase badge in the sidebar. The **All** button above ⚙ steps through
   *All → Work only → Private only* (also in the menubar menu): the other side disappears from the
-  sidebar, the menubar, the counts and its desktop notifications, e.g. while sharing your screen.
+  sidebar, the menubar, the counts and the desktop notifications its pages raise (not ones a service worker sends),
+  e.g. while sharing your screen.
 - **⚙ in the sidebar** (or right-click its empty space) opens the same menu as the menubar:
   edit/add services, reload, quit.
 - **Clicking a chat's desktop notification** opens Earshot on that chat.

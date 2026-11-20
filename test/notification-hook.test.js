@@ -35,5 +35,5 @@ test('a notification click logs the line main.js listens for', () => {
   // Hidden by mode: no real notification is created at all.
   window.__earshotQuiet = true;
   assert.ok(!(new window.Notification('secret') instanceof N));
-  assert.match(src, /=== '__earshot:open'/);
+  assert.match(src, /'console-message'[\s\S]{0,120}'__earshot:open'/);
 });

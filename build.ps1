@@ -327,8 +327,12 @@ foreach ($f in 'main.js', 'nav.js', 'preload.js', 'service-preload.js', 'sidebar
 # Earshot's own icon into the exe (Explorer, Task Manager, the Startup apps list), every
 # build like build.sh's icns, so a changed icon lands without a runtime copy.
 $rcedit = Join-Path $src 'node_modules\rcedit\bin\rcedit-x64.exe'
-& $rcedit $destExe --set-icon (Join-Path $src 'assets\icon.ico')
-if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit could not set the exe icon; Earshot still runs.' }
+if (Test-Path -LiteralPath $rcedit) {
+  & $rcedit $destExe --set-icon (Join-Path $src 'assets\icon.ico')
+  if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit could not set the exe icon; Earshot still runs.' }
+} else {
+  Write-Warning "No $rcedit (node_modules predates it: run 'npm ci'); exe keeps Electron's icon."
+}
 
 # No signing step, and that is not an oversight: build.sh's `codesign --sign -` is an
 # ad-hoc signature, whose Windows equivalent would need a real Authenticode certificate.

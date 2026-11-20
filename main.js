@@ -490,7 +490,7 @@ function openMeeting(url, from) {
       url,
       emoji: '🎥',
       prio: 'low',
-      group: from.group,
+      group: 'both', // a call you are in never vanishes with a mode switch
       temp: true,
       partition: from.partition || `persist:${from.id}`,
     };
@@ -516,24 +516,34 @@ function closeMeeting() {
       views[lastId] && lastId !== MEET_ID
         ? lastId
         : order.find((id) => id !== MEET_ID && views[id]);
-    if (back) switchTo(back); // detaches the meeting view
+    if (back)
+      switchTo(back); // detaches the meeting view
+    else if (view) win.contentView.removeChildView(view);
   }
   delete views[MEET_ID];
   view?.webContents.close();
   SERVICES = SERVICES.filter((x) => x.id !== MEET_ID);
   order = order.filter((id) => id !== MEET_ID);
-  delete unread[MEET_ID];
+  clearTimeout(pollTimer[MEET_ID]);
+  for (const o of [unread, unreadTitle, unreadBadge, unreadDom]) delete o[MEET_ID];
   updateTray();
   sendState();
 }
 // getDisplayMedia (Meet's "Present now") fails outright without a handler. macOS 15+
-// shows its own screen/window picker; elsewhere the main screen is shared.
+// shows its own screen/window picker. The handler sits on a BORROWED session (Chat's),
+// so it answers Meet frames only: anything else in that session is refused instead of
+// getting the main screen without a prompt where the system picker does not exist.
 const screenShareReady = new WeakSet();
 function allowScreenShare(ses) {
   if (screenShareReady.has(ses)) return;
   screenShareReady.add(ses);
   ses.setDisplayMediaRequestHandler(
-    (_req, cb) => {
+    (req, cb) => {
+      let host = '';
+      try {
+        host = new URL(req.frame?.url || '').hostname;
+      } catch {}
+      if (host !== 'meet.google.com') return cb({});
       desktopCapturer
         .getSources({ types: ['screen'] })
         .then(([screen]) => cb(screen ? { video: screen } : {}))
@@ -582,7 +592,11 @@ function sanitizeSenders(list) {
 function writeState() {
   const payload = {
     at: new Date().toISOString(),
-    total: totalUnread(),
+    total: SERVICES.reduce(
+      // all modes: a dashboard's total must match its rows
+      (a, x) => a + (!paused.has(x.id) && !muted.has(x.id) ? unread[x.id] || 0 : 0),
+      0,
+    ),
     services: orderedServices()
       .filter(Boolean)
       .map((s) => ({
@@ -953,10 +967,15 @@ function createServiceView(s) {
   wc.on('found-in-page', (_e, r) =>
     findView?.webContents.send('found', r.activeMatchOrdinal, r.matches),
   );
-  // The notification-click line from BADGE_HOOK_JS. A page could log it unprompted; the
-  // worst it gets is its own tab brought to the front.
+  // The notification-click line from BADGE_HOOK_JS. Main frame only (an embedded iframe
+  // must not summon the window), and at most every 2 s: showing the window takes keyboard
+  // focus, so a page logging the line in a loop would otherwise steal what you type.
+  let openedAt = 0;
   wc.on('console-message', (e, _level, legacyMessage) => {
-    if ((e.message ?? legacyMessage) === '__earshot:open' && views[s.id] === view) showWindow(s.id);
+    if ((e.message ?? legacyMessage) !== '__earshot:open' || views[s.id] !== view) return;
+    if ((e.frame && e.frame !== wc.mainFrame) || Date.now() - openedAt < 2000) return;
+    openedAt = Date.now();
+    showWindow(s.id);
   });
   const poll = async () => {
     if (views[s.id] !== view) return; // this view was recycled; its successor polls itself
@@ -1269,6 +1288,7 @@ function setZoom(id, level) {
 
 // ---- find in page: a small bar over the top-right of the open service ----
 let findView = null;
+let findText = ''; // the last query, so Enter on the same text continues it
 function openFind() {
   if (!findView) {
     findView = new WebContentsView({
@@ -1284,6 +1304,7 @@ function openFind() {
 function closeFind() {
   if (!findView || !win.contentView.children.includes(findView)) return;
   views[activeId]?.webContents.stopFindInPage('clearSelection');
+  findText = '';
   win.contentView.removeChildView(findView);
   views[activeId]?.webContents.focus();
 }
@@ -1534,14 +1555,13 @@ const fromSidebar = (event) => fromWindow(event, sidebar?.webContents);
 const fromSettings = (event) => fromWindow(event, settingsWin?.webContents);
 const fromFind = (event) => fromWindow(event, findView?.webContents);
 
-let findText = '';
 ipcMain.on('find', (event, text, forward) => {
   const wc = views[activeId]?.webContents;
   if (!fromFind(event) || !wc) return;
   if (!text) {
     wc.stopFindInPage('clearSelection');
     findView.webContents.send('found', 0, 0);
-  } else wc.findInPage(String(text), { forward: forward !== false, findNext: text === findText });
+  } else wc.findInPage(String(text), { forward: forward !== false, findNext: text !== findText }); // true = a NEW search
   findText = text;
 });
 ipcMain.on('find-close', (event) => {
@@ -1573,7 +1593,11 @@ ipcMain.on('service-menu', (event, id) => {
 });
 ipcMain.on('reorder', (event, ids) => {
   if (!fromSidebar(event)) return;
-  order = normalizeOrder(ids);
+  // In Work/Private mode the sidebar only sends what it shows; the hidden services keep
+  // their slots and the shown ones are re-dealt into theirs.
+  const shown = new Set(ids);
+  let i = 0;
+  order = normalizeOrder(order.map((id) => (shown.has(id) ? ids[i++] : id)));
   try {
     fs.writeFileSync(orderPath(), JSON.stringify(order));
   } catch {}
