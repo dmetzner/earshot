@@ -1540,6 +1540,16 @@ function createWindow() {
       win.hide();
     }
   });
+  // A view attached while the window has never been shown stays blank on the first show
+  // until a reload. Re-attaching it once the window is on screen makes it paint, as
+  // switchTo already does for every later switch.
+  win.once('show', () => {
+    const v = views[activeId];
+    if (!v) return;
+    win.contentView.removeChildView(v);
+    win.contentView.addChildView(v);
+    layout();
+  });
   layout();
 }
 
