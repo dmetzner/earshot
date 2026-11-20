@@ -1,7 +1,7 @@
 <meta charset="utf-8" />
 <meta
   http-equiv="Content-Security-Policy"
-  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:;"
+  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: http: data:;"
 />
 <style>
   :root { color-scheme: dark; }
@@ -12,16 +12,16 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 10px;
-    padding: 12px 0;
+    gap: 6px;
+    padding: 8px 0;
     font-family: -apple-system, system-ui, sans-serif;
     overflow: hidden;
   }
   .item {
     position: relative;
-    width: 48px;
-    height: 48px;
-    border-radius: 14px;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
     background: #2b2d31;
     display: flex;
     align-items: center;
@@ -30,24 +30,24 @@
     transition: border-radius .15s ease, background .15s ease;
     overflow: visible;
   }
-  .item:hover { border-radius: 16px; background: #35373c; }
-  .item.active { border-radius: 16px; background: #404249; }
+  .item:hover { border-radius: 14px; background: #35373c; }
+  .item.active { border-radius: 14px; background: #404249; }
   .item.dragging { opacity: .4; }
   /* active pill on the left edge */
   .item.active::before {
     content: "";
     position: absolute;
-    left: -12px;
+    left: -8px;
     top: 50%;
     transform: translateY(-50%);
     width: 4px;
-    height: 28px;
+    height: 22px;
     border-radius: 0 4px 4px 0;
     background: #fff;
   }
-  .item img { width: 30px; height: 30px; border-radius: 8px; }
+  .item img { width: 24px; height: 24px; border-radius: 6px; }
   .item .letter {
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 600;
     color: #dbdee1;
   }
@@ -71,6 +71,14 @@
   .badge.show { display: block; }
   /* muted: still counted here, just not in the tray */
   .item.muted .badge { background: #5c5f66; }
+  .item.muted img, .item.muted .letter { opacity: .55; }
+  .item.muted::after {
+    content: "🔕";
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    font-size: 11px;
+  }
   /* paused: view destroyed, nothing counted; a click resumes it */
   .item.paused img, .item.paused .letter { opacity: .35; filter: grayscale(1); }
   .item.paused::after {
@@ -86,15 +94,15 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 4px;
-    padding-bottom: 6px;
+    gap: 3px;
+    padding-bottom: 4px;
     border-bottom: 1px solid #2b2d31;
     margin-bottom: 4px;
   }
   .navbtn {
-    width: 20px;
-    height: 20px;
-    border-radius: 7px;
+    width: 16px;
+    height: 18px;
+    border-radius: 6px;
     background: #2b2d31;
     color: #dbdee1;
     display: flex;
@@ -107,6 +115,39 @@
   }
   .navbtn:hover { background: #404249; }
   .navbtn:active { background: #4752c4; }
+  #list { display: flex; flex-direction: column; gap: 6px; }
+  /* work services carry a blue briefcase badge, bottom-left (unread badge is bottom-right) */
+  .item .tag {
+    position: absolute;
+    bottom: -3px;
+    left: -3px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    border: 2px solid #1e1f22;
+    background: #4874f2 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='5.5' width='10' height='7' rx='1.2' fill='white'/%3E%3Crect x='6' y='3.3' width='4' height='3' rx='1' fill='none' stroke='white' stroke-width='1.2'/%3E%3C/svg%3E") center / 11px no-repeat;
+    display: none;
+  }
+  .item.work .tag { display: block; }
+  /* the mode switch and the app menu, pinned to the bottom across the sidebar's width */
+  #mode.on { background: #4752c4; }
+  #mode,
+  #appmenu {
+    width: calc(100% - 12px);
+    height: 28px;
+    border-radius: 10px;
+    background: #2b2d31;
+    color: #dbdee1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background .15s ease;
+  }
+  #mode:hover,
+  #appmenu:hover { background: #404249; }
+  #mode { margin-top: auto; font-size: 10px; }
 </style>
 <div class="nav">
   <div class="navbtn" id="back" title="Back">‹</div>
@@ -114,6 +155,8 @@
   <div class="navbtn" id="home" title="Home (reload service)">⌂</div>
 </div>
 <div id="list"></div>
+<div id="mode" title="Click: All → Work only → Private only"></div>
+<div id="appmenu" title="Services, reload, quit">⚙</div>
 <script>
   const list = document.getElementById('list');
   const els = {};
@@ -140,6 +183,11 @@
   });
 
   function render(state) {
+    for (const id of Object.keys(els)) {
+      if (state.services.some((s) => s.id === id)) continue;
+      els[id].remove(); // a closed meeting
+      delete els[id];
+    }
     state.services.forEach((s) => {
       let el = els[s.id];
       if (!el) {
@@ -157,16 +205,23 @@
         });
         el.innerHTML =
           `<span class="letter">${s.name[0]}</span>` +
+          `<span class="tag"></span>` +
           `<span class="badge"></span>`;
         list.appendChild(el);
         els[s.id] = el;
       }
+      // the configured emoji until (or unless) the page gives us a favicon
+      el.querySelector('.letter').textContent = s.emoji || s.name[0];
       // real icon (favicon) once we have it
-      if (s.icon) {
+      if (s.icon && s.icon !== el.dataset.badIcon) {
         let img = el.querySelector('img');
         if (!img) {
           img = document.createElement('img');
-          img.onerror = () => img.remove(); // fall back to the letter
+          img.onerror = () => {
+            el.dataset.badIcon = img.src; // don't retry it on every state update
+            img.remove(); // fall back to the emoji/letter
+            el.querySelector('.letter').style.display = '';
+          };
           el.insertBefore(img, el.querySelector('.badge'));
           el.querySelector('.letter').style.display = 'none';
         }
@@ -183,8 +238,16 @@
       el.classList.toggle('active', s.id === state.activeId);
       el.classList.toggle('paused', s.paused);
       el.classList.toggle('muted', s.muted);
-      el.title = s.paused ? `${s.name} (paused, click to resume)` : s.name;
+      el.classList.toggle('work', s.work);
+      el.title = s.paused
+        ? `${s.name} (paused, click to resume)`
+        : s.muted
+          ? `${s.name} (muted: counted here, not in the menu bar)`
+          : s.name;
     });
+    const modeEl = document.getElementById('mode');
+    modeEl.textContent = { all: 'All', work: '💼 Work', private: '🏠 Priv' }[state.mode];
+    modeEl.classList.toggle('on', state.mode !== 'all');
     // Apply the order from main (loaded/saved), but never fight an in-progress drag.
     if (!dragging) for (const s of state.services) list.appendChild(els[s.id]);
   }
@@ -192,6 +255,14 @@
   document.getElementById('back').onclick = () => window.hub.back();
   document.getElementById('forward').onclick = () => window.hub.forward();
   document.getElementById('home').onclick = () => window.hub.home();
+  document.getElementById('appmenu').onclick = () => window.hub.appMenu();
+  document.getElementById('mode').onclick = () => window.hub.modeNext();
+  // Right-click anywhere but on a service: the same menu as the menubar's.
+  document.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.item')) return;
+    e.preventDefault();
+    window.hub.appMenu();
+  });
 
   window.hub.onState(render);
 </script>

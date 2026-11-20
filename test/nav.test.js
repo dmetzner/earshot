@@ -49,3 +49,15 @@ test('classifyPopup sends new-window links out, even on the service domain', () 
   assert.strictEqual(classifyPopup('https://accounts.google.com/o/oauth2/auth'), 'in-view');
   assert.strictEqual(classifyPopup('not a url'), 'deny');
 });
+
+test('isMeetingUrl: only real Meet rooms', () => {
+  const { isMeetingUrl } = require('../nav');
+  assert.ok(isMeetingUrl('https://meet.google.com/abc-defg-hij'));
+  assert.ok(isMeetingUrl('https://meet.google.com/abc-defg-hij?authuser=1'));
+  assert.ok(isMeetingUrl('https://meet.google.com/_meet/abc-defg-hij?hs=122'));
+  assert.ok(!isMeetingUrl('https://meet.google.com/'));
+  assert.ok(!isMeetingUrl('https://meet.google.com/landing'));
+  assert.ok(!isMeetingUrl('http://meet.google.com/abc-defg-hij'));
+  assert.ok(!isMeetingUrl('https://meet.google.com.evil.com/abc-defg-hij'));
+  assert.ok(!isMeetingUrl('not a url'));
+});

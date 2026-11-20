@@ -57,6 +57,7 @@ passed through to the exported state file for other tools to filter on.</p>
       <th>URL</th>
       <th class="colp">Priority</th>
       <th class="colp">Mode</th>
+      <th class="colp">Load</th>
       <th></th>
     </tr>
   </thead>
@@ -92,8 +93,13 @@ passed through to the exported state file for other tools to filter on.</p>
         <option value="low"${s.prio !== 'high' ? ' selected' : ''}>Low (quiet)</option>
       </select></td>
       <td><select class="f-group">
-        <option value="private"${s.group !== 'work' ? ' selected' : ''}>Private</option>
+        <option value="private"${!['work', 'both'].includes(s.group) ? ' selected' : ''}>Private</option>
         <option value="work"${s.group === 'work' ? ' selected' : ''}>Work</option>
+        <option value="both"${s.group === 'both' ? ' selected' : ''}>Both</option>
+      </select></td>
+      <td><select class="f-load" title="On demand: loads when opened, unloads 10 min after you leave it. For pages with nothing unread to watch.">
+        <option value="always"${s.onDemand ? '' : ' selected'}>Always</option>
+        <option value="demand"${s.onDemand ? ' selected' : ''}>On demand</option>
       </select></td>
       <td><button type="button" class="del" title="Remove">✕</button></td>`;
     tr.querySelector('.del').onclick = () => tr.remove();
@@ -127,6 +133,7 @@ passed through to the exported state file for other tools to filter on.</p>
       url: tr.querySelector('.f-url').value.trim(),
       prio: tr.querySelector('.f-prio').value,
       group: tr.querySelector('.f-group').value,
+      onDemand: tr.querySelector('.f-load').value === 'demand',
     }));
     const bad = list.find((s) => !s.name || !s.url);
     if (bad) { err.textContent = 'Every service needs a name and a URL.'; return; }

@@ -319,9 +319,16 @@ if ($repaired -or -not (Test-Path -LiteralPath $destExe) -or $have -ne $markerWa
 # build.sh, and it has to stay the same list.
 New-Item -ItemType Directory -Force -Path $app | Out-Null
 foreach ($f in 'main.js', 'nav.js', 'preload.js', 'service-preload.js', 'sidebar.html',
-                'package.json', 'settings.html', 'settings-preload.js') {
+                'package.json', 'settings.html', 'settings-preload.js', 'find.html',
+                'find-preload.js') {
   Copy-Item -LiteralPath (Join-Path $src $f) -Destination (Join-Path $app $f) -Force
 }
+
+# Earshot's own icon into the exe (Explorer, Task Manager, the Startup apps list), every
+# build like build.sh's icns, so a changed icon lands without a runtime copy.
+$rcedit = Join-Path $src 'node_modules\rcedit\bin\rcedit-x64.exe'
+& $rcedit $destExe --set-icon (Join-Path $src 'assets\icon.ico')
+if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit could not set the exe icon; Earshot still runs.' }
 
 # No signing step, and that is not an oversight: build.sh's `codesign --sign -` is an
 # ad-hoc signature, whose Windows equivalent would need a real Authenticode certificate.

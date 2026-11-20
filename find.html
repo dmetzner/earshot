@@ -1,0 +1,59 @@
+<meta charset="utf-8" />
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';"
+/>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    background: transparent;
+    font: 13px -apple-system, system-ui, sans-serif;
+    padding: 4px;
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 6px 0 10px;
+    background: #2b2d31;
+    border: 1px solid #404249;
+    border-radius: 10px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+  }
+  input { flex: 1; background: none; border: 0; outline: 0; color: #dbdee1; font: inherit; }
+  #count { color: #949ba4; min-width: 44px; text-align: right; }
+  button {
+    background: none; border: 0; color: #dbdee1; width: 22px; height: 22px;
+    border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: #404249; }
+</style>
+<div class="bar">
+  <input id="q" placeholder="Find in page" spellcheck="false" />
+  <span id="count"></span>
+  <button type="button" id="prev" title="Previous (Shift+Enter)">↑</button>
+  <button type="button" id="next" title="Next (Enter)">↓</button>
+  <button type="button" id="close" title="Close (Esc)">✕</button>
+</div>
+<script>
+  const q = document.getElementById('q');
+  const count = document.getElementById('count');
+  const go = (forward) => window.finder.find(q.value, forward);
+  q.addEventListener('input', () => go(true));
+  q.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') go(!e.shiftKey);
+    if (e.key === 'Escape') window.finder.close();
+  });
+  document.getElementById('prev').onclick = () => go(false);
+  document.getElementById('next').onclick = () => go(true);
+  document.getElementById('close').onclick = () => window.finder.close();
+  window.finder.onOpen(() => {
+    q.focus();
+    q.select();
+  });
+  window.finder.onFound((at, of) => {
+    count.textContent = q.value ? `${at}/${of}` : '';
+  });
+</script>

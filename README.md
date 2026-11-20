@@ -13,8 +13,8 @@ The point isn't the window — it's the **menubar indicator**. You should always
 On **macOS** the indicator is menubar text:
 
 - **`💬`** — all clear
-- **`🔴 💬2 ✉5`** — high-priority unread (act now), shown in red with each app's icon + count
-- **`🔴 💬2 · 🟢3`** — high-priority plus low-priority (after the `·`, no red — you know, but it's not urgent)
+- **`💬2` `✉️5` `🟢3`** — one menubar item per app with unread, each with its count; click one to
+  open exactly that app, right-click any of them for the menu
 
 Windows has no menubar text to write into — `tray.setTitle` is a macOS-only API that
 silently does nothing there — so the same three facts are **painted into the tray icon**: a
@@ -36,6 +36,15 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
   3. an optional **per-service DOM extractor** — e.g. Google Chat reports unread only in `aria-label`s
 - **Per-service priority** — `high` (red alert) vs `low` (quiet). Toggle any service at runtime; persisted.
 - **Drag-to-reorder** the sidebar; order persisted.
+- **Keyboard:** Alt+Space shows/hides Earshot from anywhere; inside it ⌘1–8 (Ctrl on Windows)
+  jumps to that sidebar slot, ⌘9 to the last, Ctrl+Tab back to the previous chat, ⌘F finds
+  in the page, ⌘+ / ⌘− / ⌘0 zoom (remembered per service), ⌘W hides.
+- **Work / private:** work services carry a blue briefcase badge in the sidebar. The **All** button above ⚙ steps through
+  *All → Work only → Private only* (also in the menubar menu): the other side disappears from the
+  sidebar, the menubar, the counts and its desktop notifications, e.g. while sharing your screen.
+- **⚙ in the sidebar** (or right-click its empty space) opens the same menu as the menubar:
+  edit/add services, reload, quit.
+- **Clicking a chat's desktop notification** opens Earshot on that chat.
 - **Right-click a sidebar icon** for that service's menu:
   - **Pause / Resume** — pausing closes the service's renderer process, so it uses no
     memory and reports nothing: its icon greys out with a ⏸, it drops out of the tray, and
@@ -114,8 +123,12 @@ Services are stored in `services.json` inside Electron's userData directory — 
 - **Icon** — an emoji shown in the sidebar (and, on macOS, in the menubar)
 - **Name**, **URL**
 - **Priority** — High (red) or Low (quiet)
-- **Mode** — a free label, `private` or `work`. Earshot itself does nothing with it; it is
-  passed through to the state file so an external tool can filter services by it.
+- **Load** — *Always*, or *On demand* for a page with nothing unread to watch (a dashboard):
+  it loads when you open it and unloads 10 minutes after you leave it.
+- **Mode** — `private`, `work` or `both`: which sidebar mode shows the service (*both* = every
+  mode), and the blue work badge for `work`. Also passed through to the state file so an external
+  tool can filter services by it; a tool that only knows work/private should read `both` as
+  either.
 
 Saving rewrites the config and restarts the app. **Logins are preserved** — sessions are keyed by each service's stable id.
 

@@ -73,4 +73,26 @@ function classifyPopup(url) {
   return isLoginHost(host) && !redirectTarget(url) ? 'in-view' : 'external';
 }
 
-module.exports = { baseDomain, classifyNav, classifyPopup, isLoginHost, redirectTarget };
+// A Google Meet room (meet.google.com/abc-defg-hij). Earshot opens these itself, in a
+// temporary sidebar entry, instead of handing them to the browser.
+function isMeetingUrl(url) {
+  try {
+    const u = new URL(url);
+    return (
+      u.protocol === 'https:' &&
+      u.hostname === 'meet.google.com' &&
+      /^\/(_meet\/)?[a-z]{3}-[a-z]{4}-[a-z]{3}(\/|$)/.test(u.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+module.exports = {
+  baseDomain,
+  classifyNav,
+  classifyPopup,
+  isLoginHost,
+  isMeetingUrl,
+  redirectTarget,
+};
