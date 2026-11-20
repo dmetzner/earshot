@@ -219,6 +219,22 @@ cp "$SRC"/assets/tray*.png "$APP/assets/"
 cp "$SRC/assets/icon.icns" "$DEST/Contents/Resources/electron.icns"
 touch "$DEST" # Finder/Dock re-read the icon of a bundle whose mtime changed
 
+# URL schemes Earshot accepts. Without them LaunchServices refuses `open -a Earshot <url>`
+# ("cannot open the specified document or URL") before main.js ever sees it — MeetingBar's
+# Meet links (https) and earshot:// both. Every build, so an existing bundle gets them too.
+# Declaring http/https lists Earshot as a possible default browser; it never becomes one.
+PL="$DEST/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$PL" 2>/dev/null || true
+/usr/libexec/PlistBuddy \
+  -c "Add :CFBundleURLTypes array" \
+  -c "Add :CFBundleURLTypes:0 dict" \
+  -c "Add :CFBundleURLTypes:0:CFBundleURLName string Earshot" \
+  -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" \
+  -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string earshot" \
+  -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:1 string http" \
+  -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:2 string https" "$PL"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST"
+
 codesign --force --deep --sign - "$DEST" >/dev/null 2>&1
 echo "Built $DEST (Electron $SRC_VER)"
 open "$DEST"
