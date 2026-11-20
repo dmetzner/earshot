@@ -39,6 +39,9 @@ have to click twice to see is not an indicator, so pin it once — *Settings →
 - **Keyboard:** Alt+Space shows/hides Earshot from anywhere; inside it ⌘1–8 (Ctrl on Windows)
   jumps to that sidebar slot, ⌘9 to the last, Ctrl+Tab back to the previous chat, ⌘F finds
   in the page, ⌘+ / ⌘− / ⌘0 zoom (remembered per service), ⌘W hides.
+- **Meetings:** Meet links open in a temporary 🎥 Meeting entry (right-click → Close meeting). On
+  macOS 15+ *Present now* offers the system's screen/window picker; on Windows and older macOS it
+  shares the whole main screen.
 - **Work / private:** work services carry a blue briefcase badge in the sidebar. The **All** button above ⚙ steps through
   *All → Work only → Private only* (also in the menubar menu): the other side disappears from the
   sidebar, the menubar, the counts and the desktop notifications its pages raise (not ones a service worker sends),
