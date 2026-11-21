@@ -948,6 +948,27 @@ function createServiceView(s) {
 
   wc.loadURL(s.url, { userAgent: CHROME_UA });
 
+  // Started at login, the network is often not up yet: the first load fails and the view
+  // stays white until a manual reload. Retry a failed main-frame load, backing off to 15 s
+  // (an offline load fails instantly, so a short cap costs nothing and shortens the wait
+  // once the network is back). -3 is ERR_ABORTED (a navigation replaced by another).
+  let retryMs = 2000;
+  let retryTimer;
+  wc.on('did-fail-load', (_e, code, _desc, url, isMainFrame) => {
+    if (!isMainFrame || code === -3) return;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      if (views[s.id] === view && !wc.isDestroyed()) wc.loadURL(url, { userAgent: CHROME_UA });
+    }, retryMs);
+    retryMs = Math.min(retryMs * 2, 15000);
+  });
+  // A load that succeeded some other way (a manual reload) must not be hit by a pending
+  // retry later, which would wipe whatever was typed since.
+  wc.on('did-finish-load', () => {
+    clearTimeout(retryTimer);
+    retryMs = 2000;
+  });
+
   // Unread is the max of three signals (see recompute): Badging API, tab-title
   // "(N)", and an optional per-service DOM extractor. Title is event-driven.
   // With contextIsolation+sandbox the preload can no longer patch the page's
