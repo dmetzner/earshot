@@ -17,9 +17,25 @@ const path = require('node:path');
 const { baseDomain, classifyNav, classifyPopup, isMeetingUrl, redirectTarget } = require('./nav');
 const fs = require('node:fs');
 
-const CHROME_MAJOR = '140';
+// The real engine version and OS: Google's sign-in also reads navigator.userAgentData and
+// navigator.platform from JS, which spoofing cannot reach, so a header claiming a different OS
+// or Chrome version than the page sees is itself the tell (it blocked Windows logins).
+const CHROME_MAJOR = process.versions.chrome.split('.')[0];
+const ON_WINDOWS = process.platform === 'win32';
+const FIREFOX_UA = ON_WINDOWS
+  ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0'
+  : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0';
+function isGoogleLogin(url) {
+  try {
+    return /(^|\.)accounts\.google\./.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
 const CHROME_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+  (ON_WINDOWS
+    ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ') +
   `(KHTML, like Gecko) Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`;
 
 // Full Chrome UA Client-Hint set. Google sign-in ("This browser or app may not
@@ -31,8 +47,8 @@ const CHROME_UA =
 const CLIENT_HINTS = {
   'sec-ch-ua': `"Chromium";v="${CHROME_MAJOR}", "Google Chrome";v="${CHROME_MAJOR}", "Not=A?Brand";v="24"`,
   'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"macOS"',
-  'sec-ch-ua-platform-version': '"15.5.0"',
+  'sec-ch-ua-platform': ON_WINDOWS ? '"Windows"' : '"macOS"',
+  'sec-ch-ua-platform-version': ON_WINDOWS ? '"19.0.0"' : '"15.5.0"',
   'sec-ch-ua-full-version-list': `"Chromium";v="${CHROME_MAJOR}.0.0.0", "Google Chrome";v="${CHROME_MAJOR}.0.0.0", "Not=A?Brand";v="24.0.0.0"`,
   'sec-ch-ua-full-version': `"${CHROME_MAJOR}.0.0.0"`,
   'sec-ch-ua-arch': process.arch === 'arm64' ? '"arm"' : '"x86"',
@@ -942,8 +958,16 @@ function createServiceView(s) {
     for (const k of Object.keys(h)) {
       if (/^sec-ch-ua/i.test(k)) delete h[k];
     }
-    Object.assign(h, CLIENT_HINTS);
+    // Google's sign-in page still flags Chromium-as-Chrome (it probes the page's JS, which no
+    // header reaches). It accepts Firefox, which sends no client hints at all — the same
+    // workaround Ferdium/Rambox ship. Only the sign-in host gets it; the app keeps Chrome.
+    if (isGoogleLogin(details.url)) h['User-Agent'] = FIREFOX_UA;
+    else Object.assign(h, CLIENT_HINTS);
     cb({ requestHeaders: h });
+  });
+  // navigator.userAgent follows the page: Firefox on the sign-in page, Chrome everywhere else.
+  wc.on('did-start-navigation', (d) => {
+    if (d.isMainFrame) wc.setUserAgent(isGoogleLogin(d.url) ? FIREFOX_UA : CHROME_UA);
   });
 
   wc.loadURL(s.url, { userAgent: CHROME_UA });

@@ -324,12 +324,14 @@ foreach ($f in 'main.js', 'nav.js', 'preload.js', 'service-preload.js', 'sidebar
   Copy-Item -LiteralPath (Join-Path $src $f) -Destination (Join-Path $app $f) -Force
 }
 
-# Earshot's own icon into the exe (Explorer, Task Manager, the Startup apps list), every
-# build like build.sh's icns, so a changed icon lands without a runtime copy.
+# Earshot's own icon and name into the exe (Explorer, Task Manager, the Startup apps list), every
+# build like build.sh's icns, so a changed icon lands without a runtime copy. The name matters:
+# a pinned taskbar button is labelled with FileDescription, which Electron ships as "Electron".
 $rcedit = Join-Path $src 'node_modules\rcedit\bin\rcedit-x64.exe'
 if (Test-Path -LiteralPath $rcedit) {
-  & $rcedit $destExe --set-icon (Join-Path $src 'assets\icon.ico')
-  if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit could not set the exe icon; Earshot still runs.' }
+  & $rcedit $destExe --set-icon (Join-Path $src 'assets\icon.ico') `
+    --set-version-string FileDescription Earshot --set-version-string ProductName Earshot
+  if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit could not set the exe icon and name; Earshot still runs.' }
 } else {
   Write-Warning "No $rcedit (node_modules predates it: run 'npm ci'); exe keeps Electron's icon."
 }
