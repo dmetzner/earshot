@@ -1659,11 +1659,9 @@ ipcMain.on('home', (event) => {
   views[activeId]?.webContents.loadURL(s.url, { userAgent: CHROME_UA });
 });
 
-// Menubar app: the window is hidden ~all the time and the web views don't need
-// GPU-accelerated compositing. Dropping HW accel kills the separate GPU process
-// (~100-300MB) at the cost of slightly less-smooth rendering when visible.
-// Must be called before the app is ready.
-app.disableHardwareAcceleration();
+// Hardware acceleration stays ON: without it there is no WebGL at all (not even the
+// SwiftShader fallback), and Meet/Teams refuse background blur and visual effects.
+// Measured on macOS (Electron 45): the GPU process costs ~7 MB more idle with it on.
 
 // Chromium sizes each partition's HTTP cache off free disk space, and eight partitions
 // each helping themselves is how the userData directory reached 1.5 GB. A chat app's
