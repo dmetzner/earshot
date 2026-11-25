@@ -1092,7 +1092,23 @@ function createServiceView(s) {
     });
     child.webContents.on('did-start-navigation', (d) => d.isMainFrame && route(d.url));
     child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    setTimeout(() => child.isDestroyed() || child.destroy(), 15000); // never went anywhere
+    // A real pop-out (a Meet/Chat call "in a new window") never navigates: it stays on
+    // about:blank and the opener renders the call into it. Content in it = show it.
+    const probe = setInterval(async () => {
+      if (child.isDestroyed()) return clearInterval(probe);
+      const filled = await child.webContents
+        .executeJavaScript('document.body?.childElementCount || 0')
+        .catch(() => 0);
+      if (filled && !child.isDestroyed()) {
+        clearInterval(probe);
+        clearTimeout(kill);
+        child.show();
+      }
+    }, 500);
+    const kill = setTimeout(() => {
+      clearInterval(probe);
+      if (!child.isDestroyed()) child.destroy(); // never went anywhere
+    }, 15000);
   });
 
   // Top-level self-navigation gets the same gate: only login + same-service hosts
